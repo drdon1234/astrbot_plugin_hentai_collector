@@ -1,4 +1,4 @@
-"""用户搜索会话：缓存最近一次列表结果，支持按序号取作品与翻页。"""
+"""用户搜索会话：缓存最近一次列表结果（单站或聚合），支持按全局序号取作品与翻页。"""
 
 import time
 from collections import OrderedDict
@@ -18,17 +18,19 @@ class SearchSession:
     """一次列表展示的上下文。
 
     Attributes:
-        source: 源站键
+        sources: 参与的源站键，单站指令只有一个
         mode: ``search`` 或 ``ranking``
-        items: 已展示的作品（序号从 1 开始）
+        title: 聚合列表的总标题（单站列表为空）
+        items: 已展示的作品，聚合时按源站顺序拼接（序号从 1 开始全局连续）
         page: 当前页码
         query: 搜索条件（搜索模式）
-        period: 排行周期（排行模式）
+        period: 排行周期（排行模式；聚合排行为空表示各站默认榜单）
         has_next: 是否还有下一页
     """
 
-    source: str
+    sources: list[str]
     mode: str
+    title: str = ""
     items: list[WorkInfo] = field(default_factory=list)
     page: int = 1
     query: Optional[SearchQuery] = None

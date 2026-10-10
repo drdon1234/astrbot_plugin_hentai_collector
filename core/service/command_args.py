@@ -1,8 +1,8 @@
-"""指令参数解析：把用户输入拆分为源站、关键词、页码、排序、排行周期与筛选条件。"""
+"""指令参数解析：把用户输入拆分为关键词、页码、排序、排行周期、数量与筛选条件。"""
 
 import re
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Optional
 
 from ..types import Period, SearchQuery, SortKey
 
@@ -57,8 +57,6 @@ def parse_sort(word: str) -> Optional[SortKey]:
 class ParsedArgs:
     """解析后的指令参数。"""
 
-    source: Optional[str] = None
-    all_sources: bool = False
     query: SearchQuery = field(default_factory=SearchQuery)
     period: Optional[Period] = None
     page_given: bool = False
@@ -73,17 +71,10 @@ def split_command(message: str) -> list[str]:
     return parts[1:] if parts else []
 
 
-def parse_args(
-    tokens: list[str],
-    resolve_source: Callable[[str], Optional[str]],
-    is_all_word: Callable[[str], bool],
-    *,
-    allow_period: bool = False,
-) -> ParsedArgs:
-    """解析通用参数。
+def parse_args(tokens: list[str], *, allow_period: bool = False) -> ParsedArgs:
+    """解析通用参数（源站由指令本身决定，不从参数中识别）。
 
     规则：
-        - 第一个参数是源站别名时作为源站；``全部`` 表示所有源站
         - ``p2`` / ``第2页`` / ``页码=2`` 为页码；``5本`` / ``数量=5`` 为数量
         - ``排序=最新``、``评分>=4``、``页数>=20``、``分类=同人志``
         - ``-词`` 为排除；``allow_period`` 时识别 ``日榜/周榜/月榜/年榜/总榜``
@@ -91,8 +82,6 @@ def parse_args(
 
     Args:
         tokens: 指令参数
-        resolve_source: 源站别名解析函数
-        is_all_word: 判断“全部源站”的函数
         allow_period: 是否解析排行周期
 
     Returns:
@@ -100,18 +89,7 @@ def parse_args(
     """
     args = ParsedArgs()
     keywords: list[str] = []
-    remaining = list(tokens)
-    if remaining:
-        if is_all_word(remaining[0]):
-            args.all_sources = True
-            remaining.pop(0)
-        else:
-            key = resolve_source(remaining[0])
-            if key:
-                args.source = key
-                remaining.pop(0)
-
-    for token in remaining:
+    for token in tokens:
         if allow_period and parse_period(token) and args.period is None:
             args.period = parse_period(token)
             continue

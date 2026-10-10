@@ -2,7 +2,7 @@
     "basic": {
         "description": "基础设置",
         "type": "object",
-        "hint": "控制链接自动解析与默认源站。指令列表可发送“本子帮助”查看。",
+        "hint": "控制链接自动解析与进度提示。指令列表可发送“本子帮助”查看。",
         "items": {
             "auto_parse": {
                 "description": "自动解析作品链接",
@@ -25,19 +25,6 @@
                 ],
                 "hint": "“仅发送信息”只发封面与作品信息，用户需再发“看本 序号/链接”获取文件。",
                 "default": "发送信息和文件"
-            },
-            "default_source": {
-                "description": "默认源站",
-                "type": "string",
-                "options": [
-                    "E-Hentai",
-                    "nhentai",
-                    "JMComic",
-                    "哔咔",
-                    "Hanime1"
-                ],
-                "hint": "搜索、排行、看本等指令没有写源站时使用。",
-                "default": "E-Hentai"
             },
             "send_progress": {
                 "description": "发送进度提示",
@@ -156,7 +143,7 @@
             "request_interval": {
                 "description": "请求间隔（秒）",
                 "type": "float",
-                "hint": "两次页面请求之间的最小间隔，过小可能被临时封禁 IP。",
+                "hint": "两次页面请求之间的最小间隔。每下载一页都要请求一次单页，整本耗时约为“页数 × 间隔”；过小可能被临时封禁 IP。",
                 "default": 0.5
             }
         }
@@ -380,11 +367,23 @@
                 "hint": "列表与多部作品使用合并转发发送（仅 QQ 个人号协议端生效，其余平台逐条发送）。",
                 "default": true
             },
+            "nested_forward": {
+                "description": "聚合结果使用嵌套合并转发",
+                "type": "bool",
+                "hint": "“搜本子”“排行本子”等聚合指令按源站分组为嵌套合并转发；关闭或发送失败时改用单层合并转发。需开启“使用合并转发”。",
+                "default": true
+            },
             "list_size": {
-                "description": "列表最多显示条数",
+                "description": "单站列表最多显示条数",
                 "type": "int",
-                "hint": "有效范围 1-50；超出部分不显示，也不能用序号获取。",
+                "hint": "站点专属指令（如“搜eh”）的列表条数，有效范围 1-50。超出部分不显示，也不能用序号获取。",
                 "default": 20
+            },
+            "aggregate_list_size": {
+                "description": "聚合列表每站最多显示条数",
+                "type": "int",
+                "hint": "聚合指令（如“搜本子”）中每个源站显示的条数，有效范围 1-50。序号在各站之间连续编号。",
+                "default": 10
             },
             "max_tags": {
                 "description": "最多显示标签数",
@@ -406,13 +405,23 @@
             "auto_fetch": {
                 "description": "随机后直接发送文件",
                 "type": "bool",
-                "hint": "关闭时只发送作品信息，用户可再发“看本 jm 123456”获取。",
+                "hint": "关闭时只发送作品信息，用户可再发“看本 序号”或“看jm 123456”获取。",
                 "default": false
             },
+            "mode": {
+                "description": "聚合随机方式",
+                "type": "string",
+                "options": [
+                    "混合随机",
+                    "每站随机"
+                ],
+                "hint": "“随机本子”“随机里番”不带站点时：混合随机为每次从候选源站中随机挑一个站，共 N 部；每站随机为每个候选源站各随机 N 部，按源站分组发送。带站点的“随机eh”等只从该站随机。",
+                "default": "混合随机"
+            },
             "pool": {
-                "description": "全随机候选源站",
+                "description": "随机候选源站",
                 "type": "object",
-                "hint": "“随机本子”未指定源站时，从下列已启用且可用的源站中随机挑选。",
+                "hint": "不带站点的随机指令与源站为“全部”的随机推送从下列已启用且可用的源站中挑选；勾选的源站中没有对应类型（本子 / 里番）时使用该类型的全部源站。",
                 "items": {
                     "ehentai": {
                         "description": "E-Hentai",
@@ -437,7 +446,7 @@
                     "hanime1": {
                         "description": "Hanime1",
                         "type": "bool",
-                        "default": false
+                        "default": true
                     }
                 }
             }

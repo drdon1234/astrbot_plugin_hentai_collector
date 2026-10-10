@@ -56,6 +56,8 @@ GALLERY_RE = re.compile(r"https?://(?:e-hentai|exhentai)\.org/g/(\d+)/([0-9a-f]{
 NEXT_RE = re.compile(r'id="unext"\s+href="[^"]*?(?:[?&]|&amp;)next=(\d+)')
 FOUND_RE = re.compile(r"Found(?: about)? ([\d,]+) results?")
 IMAGE_RE = re.compile(r'<img id="img" src="([^"]+)"')
+# 单页“Reload broken image”的换节点参数，附加 ?nl= 重新请求单页会分配另一个 H@H 节点
+RELOAD_RE = re.compile(r"nl\('([^']+)'\)")
 BANNED_MARK = "Your IP address has been temporarily banned"
 GDATA_BATCH = 25
 SEARCH_PAGE_SIZE = 25
@@ -103,6 +105,16 @@ def parse_page_links(html: str, gid: int) -> dict[int, str]:
     """解析画廊缩略图页，返回 ``{页码: 单页 URL}``。"""
     pattern = re.compile(rf"https?://[^/\"'\s]+/s/[0-9a-f]{{10}}/{gid}-(\d+)")
     return {int(m.group(1)): m.group(0) for m in pattern.finditer(html)}
+
+
+def parse_image_page(html: str) -> tuple[Optional[str], Optional[str]]:
+    """解析单页，返回 (图片地址, 换节点参数)，缺失项为 None。"""
+    image = IMAGE_RE.search(html)
+    reload_key = RELOAD_RE.search(html)
+    return (
+        unescape(image.group(1)) if image else None,
+        reload_key.group(1) if reload_key else None,
+    )
 
 
 def split_tags(tags: list[str]) -> dict[str, list[str]]:
@@ -207,20 +219,28 @@ class EHentaiApi:
             page += 1
         return [links[number] for number in sorted(links)]
 
-    async def image_url(self, page_url: str) -> list[str]:
-        """解析单页上的原图地址。
+    async def image_url(self, page_url: str, reload_key: Optional[str] = None) -> tuple[str, Optional[str]]:
+        """解析单页上的图片地址。
+
+        Args:
+            page_url: 单页地址
+            reload_key: 上次解析得到的换节点参数，传入时请求另一个 H@H 节点
+
+        Returns:
+            (图片地址, 本次的换节点参数)
 
         Raises:
             BlockedError: 图片额度耗尽（509）
             SourceError: 单页中没有图片
         """
-        match = IMAGE_RE.search(await self.get_html(page_url))
-        if not match:
+        image, next_key = parse_image_page(
+            await self.get_html(page_url, {"nl": reload_key} if reload_key else None)
+        )
+        if not image:
             raise SourceError("单页中没有图片")
-        image = unescape(match.group(1))
         if image.endswith("/509.gif"):
             raise BlockedError("E-Hentai 图片额度已用尽（509），请稍后再试")
-        return [image]
+        return image, next_key
 
 
 def meta_fields(meta: dict) -> dict:

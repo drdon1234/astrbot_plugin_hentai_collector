@@ -189,8 +189,13 @@ class EHentaiSource(BaseSource):
         headers = self.resource_headers()
 
         def resolver(url: str):
+            # 首次解析拿默认节点；下载失败后重新解析时带上换节点参数，避免反复落到同一个故障节点
+            reload_key: Optional[str] = None
+
             async def resolve() -> list[str]:
-                return await self.api.image_url(url)
+                nonlocal reload_key
+                image, reload_key = await self.api.image_url(url, reload_key)
+                return [image]
 
             return resolve
 

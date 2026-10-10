@@ -70,12 +70,13 @@ def _draw_number(image, number: int):
     return Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
 
 
-def build_cover_grid(covers: list[Optional[bytes]], blur_radius: int = 0) -> Optional[bytes]:
+def build_cover_grid(covers: list[Optional[bytes]], blur_radius: int = 0, start: int = 1) -> Optional[bytes]:
     """把封面按 5 列拼接为一张带序号的图片，序号与列表序号一致。
 
     Args:
         covers: 与列表同序的封面字节，缺失位置为 None（以灰色占位）
         blur_radius: 高斯模糊半径，0 表示不模糊
+        start: 第一张封面的序号（聚合列表中各站序号连续）
 
     Returns:
         JPEG 字节；没有任何可用封面时返回 None
@@ -96,7 +97,7 @@ def build_cover_grid(covers: list[Optional[bytes]], blur_radius: int = 0) -> Opt
 
     tile_width = int(TARGET_HEIGHT * 0.7)
     prepared = []
-    for number, image in enumerate(tiles, 1):
+    for number, image in enumerate(tiles, start):
         if image is None:
             image = Image.new("RGB", (tile_width, TARGET_HEIGHT), (90, 90, 90))
         else:

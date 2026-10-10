@@ -33,10 +33,12 @@ SOURCE_DISPLAY_NAMES = {
     "hanime1": "Hanime1",
 }
 SOURCE_DEFAULT_ENABLED = {"ehentai": True, "nhentai": True, "jmcomic": True, "pica": False, "hanime1": True}
-RANDOM_POOL_DEFAULTS = {"ehentai": True, "nhentai": True, "jmcomic": True, "pica": False, "hanime1": False}
+RANDOM_POOL_DEFAULTS = {"ehentai": True, "nhentai": True, "jmcomic": True, "pica": False, "hanime1": True}
 
 LINK_ACTION_FULL = "发送信息和文件"
 LINK_ACTION_INFO = "仅发送信息"
+RANDOM_MODE_MIXED = "混合随机"
+RANDOM_MODE_PER_SITE = "每站随机"
 
 
 # ── 类型转换兜底 ────────────────────────────────────────
@@ -166,7 +168,6 @@ class BasicConfig:
     auto_parse: bool = True
     parse_jm_code: bool = True
     link_action: str = LINK_ACTION_FULL
-    default_source: str = "ehentai"
     send_progress: bool = True
 
     @property
@@ -238,7 +239,9 @@ class DisplayConfig:
     cover_blur: int = 0
     search_cover_grid: bool = True
     use_forward: bool = True
+    nested_forward: bool = True
     list_size: int = 20
+    aggregate_list_size: int = 10
     max_tags: int = 12
     show_description: bool = True
 
@@ -246,7 +249,13 @@ class DisplayConfig:
 @dataclass
 class RandomConfig:
     auto_fetch: bool = False
+    mode: str = RANDOM_MODE_MIXED
     pool: list[str] = field(default_factory=list)
+
+    @property
+    def per_site(self) -> bool:
+        """不带站点的随机指令是否每个源站各随机。"""
+        return self.mode == RANDOM_MODE_PER_SITE
 
 
 @dataclass
@@ -351,7 +360,6 @@ class ConfigManager:
             auto_parse=as_bool(section.get("auto_parse"), True),
             parse_jm_code=as_bool(section.get("parse_jm_code"), True),
             link_action=as_choice(section.get("link_action"), (LINK_ACTION_FULL, LINK_ACTION_INFO), LINK_ACTION_FULL),
-            default_source=source_key_from_name(section.get("default_source"), "ehentai"),
             send_progress=as_bool(section.get("send_progress"), True),
         )
 
@@ -430,7 +438,9 @@ class ConfigManager:
             cover_blur=as_int(section.get("cover_blur"), 0, 0, 50),
             search_cover_grid=as_bool(section.get("search_cover_grid"), True),
             use_forward=as_bool(section.get("use_forward"), True),
+            nested_forward=as_bool(section.get("nested_forward"), True),
             list_size=as_int(section.get("list_size"), 20, 1, 50),
+            aggregate_list_size=as_int(section.get("aggregate_list_size"), 10, 1, 50),
             max_tags=as_int(section.get("max_tags"), 12, 0, 100),
             show_description=as_bool(section.get("show_description"), True),
         )
@@ -439,7 +449,11 @@ class ConfigManager:
     def _parse_random(section: dict) -> RandomConfig:
         pool_section = section.get("pool") if isinstance(section.get("pool"), Mapping) else {}
         pool = [key for key in SOURCE_KEYS if as_bool(pool_section.get(key), RANDOM_POOL_DEFAULTS[key])]
-        return RandomConfig(auto_fetch=as_bool(section.get("auto_fetch"), False), pool=pool)
+        return RandomConfig(
+            auto_fetch=as_bool(section.get("auto_fetch"), False),
+            mode=as_choice(section.get("mode"), (RANDOM_MODE_MIXED, RANDOM_MODE_PER_SITE), RANDOM_MODE_MIXED),
+            pool=pool,
+        )
 
     @staticmethod
     def _parse_push(section: dict) -> PushConfig:
@@ -513,8 +527,9 @@ class ConfigManager:
         if key == "ehentai":
             cfg = self.ehentai
             cookies = {"nw": "1", **(cfg.cookies if cfg.site == "exhentai" else {})}
+            # H@H 节点常不发 TLS close_notify，aiohttp 会把大图读成残缺（ContentLengthError），curl 不受影响
             return EHentaiSource(
-                self._http("E-Hentai", cfg.use_proxy, cookies=cookies),
+                self._http("E-Hentai", cfg.use_proxy, BACKEND_CURL, cookies=cookies),
                 site=cfg.site,
                 request_interval=cfg.request_interval,
             )

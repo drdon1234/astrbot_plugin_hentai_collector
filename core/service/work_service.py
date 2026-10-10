@@ -1,12 +1,13 @@
-"""作品业务编排：详情、搜索、排行、随机与“下载→打包→缓存复用”，不依赖 AstrBot 运行时。"""
+"""作品业务编排：详情、单站与聚合的搜索 / 排行 / 随机、“下载→打包→缓存复用”，不依赖 AstrBot 运行时。"""
 
 import asyncio
+from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
 from ..logger import logger
 
 from ..constants import Config
-from ..downloader import ImageDownloader, VideoDownloader
+from ..downloader import ImageDownloader, VideoDownloader, detect_image_suffix
 from ..errors import CollectorError, SourceUnavailable, WorkNotFound
 from ..packager import Packager, safe_filename, validate_images
 from ..source import FetchContext, SourceManager
@@ -20,6 +21,25 @@ IN_PROGRESS_RETENTION = 6 * 3600
 
 async def _silent(_: str) -> None:
     return None
+
+
+@dataclass
+class SiteResult:
+    """聚合操作中单个源站的结果：成功时有 ``page``，失败时有 ``error``。"""
+
+    source: str
+    page: Optional[WorkPage] = None
+    error: str = ""
+
+    @property
+    def items(self) -> list[WorkInfo]:
+        """该源站返回的作品（失败时为空）。"""
+        return self.page.items if self.page else []
+
+
+def default_period(source) -> Period:
+    """源站默认榜单：支持周榜时用周榜，否则用其第一个榜单。"""
+    return Period.WEEK if Period.WEEK in source.ranking_periods else source.ranking_periods[0]
 
 
 class WorkService:
@@ -85,6 +105,33 @@ class WorkService:
         result.title = f"{source.name} {PERIOD_LABELS[period]}"
         return result
 
+    async def random_works(
+        self,
+        source_key: Optional[str],
+        query: Optional[SearchQuery],
+        count: int,
+        media_type: Optional[MediaType] = None,
+    ) -> list[WorkInfo]:
+        """随机若干部互不重复的作品；部分失败时返回已取得的作品。
+
+        Raises:
+            CollectorError: 一部都没有取得时抛出最后一次的失败
+        """
+        works: list[WorkInfo] = []
+        for _ in range(count * 2):
+            if len(works) >= count:
+                break
+            try:
+                work = await self.random_work(source_key, query, media_type)
+            except CollectorError as exc:
+                if not works:
+                    raise
+                logger.warning(f"随机作品失败：{exc}")
+                continue
+            if all(work.ref != existing.ref for existing in works):
+                works.append(work)
+        return works
+
     async def random_work(
         self,
         source_key: Optional[str],
@@ -98,6 +145,47 @@ class WorkService:
             source = self.sources.pick_random_source(media_type)
         work = await source.random_work(query if query and not query.is_empty() else None)
         return await self.ensure_detail(work)
+
+    # ── 聚合 ──────────────────────────────────────────
+
+    async def _gather(
+        self, keys: list[str], call: Callable[[str], Awaitable[WorkPage]]
+    ) -> list[SiteResult]:
+        """并发执行各源站请求，单站失败或超时只记录在该站结果中。"""
+
+        async def one(key: str) -> SiteResult:
+            try:
+                page = await asyncio.wait_for(call(key), Config.AGGREGATE_TIMEOUT)
+                return SiteResult(key, page=page)
+            except asyncio.TimeoutError:
+                logger.warning(f"聚合请求 {key} 超时")
+                return SiteResult(key, error="请求超时")
+            except CollectorError as exc:
+                logger.debug(f"聚合请求 {key} 失败：{exc}")
+                return SiteResult(key, error=str(exc))
+
+        return list(await asyncio.gather(*(one(key) for key in keys)))
+
+    async def search_many(self, keys: list[str], query: SearchQuery) -> list[SiteResult]:
+        """在多个源站并发搜索。"""
+        return await self._gather(keys, lambda key: self.search(key, query))
+
+    async def ranking_many(self, keys: list[str], period: Optional[Period], page: int = 1) -> list[SiteResult]:
+        """并发获取多个源站的排行榜；``period`` 为空时各站使用默认榜单。"""
+
+        async def call(key: str) -> WorkPage:
+            return await self.ranking(key, period or default_period(self.sources.require(key)), page)
+
+        return await self._gather(keys, call)
+
+    async def random_many(self, keys: list[str], query: Optional[SearchQuery], count: int) -> list[SiteResult]:
+        """每个源站各随机 ``count`` 部作品。"""
+
+        async def call(key: str) -> WorkPage:
+            works = await self.random_works(key, query, count)
+            return WorkPage(items=works, title=f"{self.sources.require(key).name} 随机")
+
+        return await self._gather(keys, call)
 
     # ── 获取作品内容 ──────────────────────────────────
 
@@ -234,21 +322,44 @@ class WorkService:
     # ── 封面 ──────────────────────────────────────────
 
     async def download_covers(self, works: list[WorkInfo]) -> list[Optional[bytes]]:
-        """并发下载封面，失败的位置返回 None。"""
-        semaphore = asyncio.Semaphore(Config.COVER_DOWNLOAD_CONCURRENCY)
+        """并发下载封面（每个源站独立限流，聚合列表中各站并行），失败的位置返回 None。
+
+        网络错误、5xx 与返回内容不是图片时重试，明确的 4xx 不重试；
+        失败汇总记录 warning，便于排查拼图中的灰色占位。
+        """
+        semaphores = {work.source: asyncio.Semaphore(Config.COVER_DOWNLOAD_CONCURRENCY) for work in works}
+        failures: list[str] = []
+
+        async def fetch(source, url: str) -> bytes:
+            last_error = ""
+            for attempt in range(1 + Config.COVER_RETRIES):
+                try:
+                    resp = await source.http.request(
+                        "GET", url, headers=source.resource_headers(), retries=0, timeout=Config.COVER_TIMEOUT
+                    )
+                    if detect_image_suffix(resp.content[:16]):
+                        return resp.content
+                    last_error = f"返回内容不是图片（{len(resp.content)} 字节）"
+                except CollectorError as exc:
+                    last_error = str(exc)
+                    if getattr(exc, "status", None) in (400, 401, 403, 404, 410, 422):
+                        break
+                if attempt < Config.COVER_RETRIES:
+                    await asyncio.sleep(Config.RETRY_BASE_DELAY * (attempt + 1))
+            raise CollectorError(last_error)
 
         async def one(work: WorkInfo) -> Optional[bytes]:
             source = self.sources.get(work.source)
             if not work.cover_url or source is None:
                 return None
-            async with semaphore:
+            async with semaphores[work.source]:
                 try:
-                    resp = await source.http.request(
-                        "GET", work.cover_url, headers=source.resource_headers(), retries=1, timeout=20
-                    )
-                    return resp.content or None
+                    return await fetch(source, work.cover_url)
                 except CollectorError as exc:
-                    logger.debug(f"封面下载失败 {work.cover_url}: {exc}")
+                    failures.append(f"{work.source}:{work.work_id}（{exc}）")
                     return None
 
-        return list(await asyncio.gather(*(one(work) for work in works)))
+        covers = list(await asyncio.gather(*(one(work) for work in works)))
+        if failures:
+            logger.warning(f"{len(failures)}/{len(works)} 张封面下载失败，以灰色占位：{'；'.join(failures[:5])}")
+        return covers

@@ -99,6 +99,40 @@ class Delivery:
             nodes = [Node(content=content, name=name, uin=self.self_id) for content in batch]
             await self._send([Nodes(nodes)])
 
+    async def forward_sections(
+        self,
+        header: list,
+        sections: list[tuple[str, list[list]]],
+        *,
+        nested: bool,
+        name: str = Config.BOT_DISPLAY_NAME,
+    ) -> None:
+        """按分组发送合并转发。
+
+        ``nested`` 时外层第一个节点为 ``header``，其后每个分组是一个内层合并转发；
+        否则（或嵌套发送失败时）把全部内容展开为单层合并转发。
+
+        Args:
+            header: 总标题消息的组件列表
+            sections: (分组名, 该组每段消息的组件列表) 列表
+            nested: 是否使用嵌套合并转发
+            name: 外层节点显示的昵称
+        """
+        flat = [header] + [content for _, contents in sections for content in contents]
+        if not (self.supports_forward and nested):
+            await self.forward(flat, name)
+            return
+        nodes = [Node(content=header, name=name, uin=self.self_id)] if header else []
+        for title, contents in sections:
+            inner = [Node(content=content, name=title, uin=self.self_id) for content in contents if content]
+            if inner:
+                nodes.append(Node(content=inner, name=title, uin=self.self_id))
+        try:
+            await self._send([Nodes(nodes)])
+        except Exception as exc:  # 协议端拒绝嵌套转发时退回单层，避免整条结果丢失
+            logger.warning(f"嵌套合并转发发送失败，改用单层合并转发：{exc!r}")
+            await self.forward(flat, name)
+
     async def file(self, path: Path) -> None:
         """发送本地文件。"""
         resolved = Path(path).resolve()

@@ -10,6 +10,9 @@
 - **排行榜**：`https://e-hentai.org/toplist.php?tl=15|13|12|11&p=页码-1`，分别为昨日 / 近一月 / 近一年 / 总榜，站点没有周榜。
 - **随机**：取最新页与 `prev=1` 最旧页的 gid 范围，随机游标跳转后随机挑选；gid 随时间递增，属于按时间近似均匀的抽样。
 - **下载**：画廊页 `?p=N` 提取 `/s/{token}/{gid}-{页码}` 单页地址 → 单页 `<img id="img" src>`；`509.gif` 表示额度耗尽（抛 `BlockedError` 并中止整本）。
+- **换节点**：单页中 `nl('xxxx-yyyy')` 是“Reload broken image”参数，带 `?nl=xxxx-yyyy` 重新请求单页会分配另一个 H@H 节点。图片下载失败后重新解析时带上上次的参数，避免重试反复落到同一个故障节点。
+- **后端**：使用 curl_cffi。H@H 节点（`*.hath.network`）的大图经 aiohttp 下载时经常在接近结尾处断开（`ContentLengthError` + `SSLEOFError`），直连与走代理都会出现；同一批地址用 curl_cffi 下载全部完整（2026-10 在 NAS 实测）。
+- **速度**：每张图都要先请求一次单页，单页请求受 `request_interval` 串行限速，因此整本耗时约为 `页数 × request_interval`；图片下载本身并行，通常不是瓶颈。实测 435 页（770 MB）约 219 秒，0 失败。
 - Cookie `nw=1` 跳过内容警告页；页面含 “temporarily banned” 或里站返回空页面时抛 `BlockedError`。请求经 `RateLimiter` 限速。
 
 ## nhentai（`core/source/platform/nhentai.py`）
