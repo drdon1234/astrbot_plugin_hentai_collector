@@ -1,0 +1,909 @@
+{
+    "basic": {
+        "description": "基础设置",
+        "type": "object",
+        "hint": "控制链接自动解析与默认源站。指令列表可发送“本子帮助”查看。",
+        "items": {
+            "auto_parse": {
+                "description": "自动解析作品链接",
+                "type": "bool",
+                "hint": "消息中出现 E-Hentai / nhentai / JM / Hanime1 作品链接时自动处理。指令消息不会被重复解析。",
+                "default": true
+            },
+            "parse_jm_code": {
+                "description": "识别 JM 编号",
+                "type": "bool",
+                "hint": "开启后消息中的“JM123456”“jm 123456”也会被自动解析；纯数字不会被识别。",
+                "default": true
+            },
+            "link_action": {
+                "description": "解析链接后的动作",
+                "type": "string",
+                "options": [
+                    "发送信息和文件",
+                    "仅发送信息"
+                ],
+                "hint": "“仅发送信息”只发封面与作品信息，用户需再发“看本 序号/链接”获取文件。",
+                "default": "发送信息和文件"
+            },
+            "default_source": {
+                "description": "默认源站",
+                "type": "string",
+                "options": [
+                    "E-Hentai",
+                    "nhentai",
+                    "JMComic",
+                    "哔咔",
+                    "Hanime1"
+                ],
+                "hint": "搜索、排行、看本等指令没有写源站时使用。",
+                "default": "E-Hentai"
+            },
+            "send_progress": {
+                "description": "发送进度提示",
+                "type": "bool",
+                "hint": "下载与打包过程中发送“开始获取 / 下载进度 / 正在生成文件”等提示。",
+                "default": true
+            }
+        }
+    },
+    "sources": {
+        "description": "源站开关",
+        "type": "object",
+        "hint": "关闭的源站不会解析链接，也不会出现在搜索、排行和随机中。哔咔需要先在“哔咔设置”填写账号。",
+        "items": {
+            "ehentai": {
+                "description": "E-Hentai / ExHentai",
+                "type": "bool",
+                "default": true
+            },
+            "nhentai": {
+                "description": "nhentai",
+                "type": "bool",
+                "default": true
+            },
+            "jmcomic": {
+                "description": "JMComic（禁漫天堂）",
+                "type": "bool",
+                "default": true
+            },
+            "pica": {
+                "description": "哔咔漫画",
+                "type": "bool",
+                "hint": "需要哔咔账号，未填写账号时即使开启也不可用。",
+                "default": false
+            },
+            "hanime1": {
+                "description": "Hanime1（里番）",
+                "type": "bool",
+                "default": true
+            }
+        }
+    },
+    "network": {
+        "description": "网络设置",
+        "type": "object",
+        "items": {
+            "proxy": {
+                "description": "代理地址",
+                "type": "string",
+                "hint": "国内网络通常必填，例如 http://127.0.0.1:7890；Docker 中请填宿主机局域网 IP。支持 socks5://。各源站可在自己的设置里单独决定是否走代理。",
+                "default": ""
+            },
+            "timeout": {
+                "description": "请求超时（秒）",
+                "type": "int",
+                "hint": "有效范围 5-300。",
+                "default": 30
+            },
+            "retries": {
+                "description": "失败重试次数",
+                "type": "int",
+                "hint": "网络不稳定或代理带宽不足时可适当增加，有效范围 0-10。",
+                "default": 3
+            },
+            "image_concurrency": {
+                "description": "图片下载并发数",
+                "type": "int",
+                "hint": "单本同时下载的图片数，有效范围 1-32。E-Hentai 过高容易被临时封禁 IP。",
+                "default": 8
+            }
+        }
+    },
+    "ehentai": {
+        "description": "E-Hentai 设置",
+        "type": "object",
+        "hint": "表站无需账号；里站 ExHentai 需要填写三项 Cookie，缺少时自动回退表站。",
+        "items": {
+            "site": {
+                "description": "站点",
+                "type": "string",
+                "options": [
+                    "e-hentai",
+                    "exhentai"
+                ],
+                "default": "e-hentai"
+            },
+            "ipb_member_id": {
+                "description": "Cookie：ipb_member_id",
+                "type": "string",
+                "condition": {
+                    "site": "exhentai"
+                },
+                "default": ""
+            },
+            "ipb_pass_hash": {
+                "description": "Cookie：ipb_pass_hash",
+                "type": "string",
+                "condition": {
+                    "site": "exhentai"
+                },
+                "default": ""
+            },
+            "igneous": {
+                "description": "Cookie：igneous",
+                "type": "string",
+                "condition": {
+                    "site": "exhentai"
+                },
+                "default": ""
+            },
+            "use_proxy": {
+                "description": "使用代理",
+                "type": "bool",
+                "default": true
+            },
+            "request_interval": {
+                "description": "请求间隔（秒）",
+                "type": "float",
+                "hint": "两次页面请求之间的最小间隔，过小可能被临时封禁 IP。",
+                "default": 0.5
+            }
+        }
+    },
+    "nhentai": {
+        "description": "nhentai 设置",
+        "type": "object",
+        "items": {
+            "language": {
+                "description": "语言过滤",
+                "type": "string",
+                "options": [
+                    "不限",
+                    "中文",
+                    "英文",
+                    "日文"
+                ],
+                "hint": "作用于搜索、排行和随机；关键词里写了 language: 时以关键词为准。",
+                "default": "不限"
+            },
+            "use_proxy": {
+                "description": "使用代理",
+                "type": "bool",
+                "default": true
+            }
+        }
+    },
+    "jmcomic": {
+        "description": "JMComic 设置",
+        "type": "object",
+        "hint": "使用 jmcomic 库的移动端 API，国内通常可直连。",
+        "items": {
+            "use_proxy": {
+                "description": "使用代理",
+                "type": "bool",
+                "default": false
+            },
+            "domains": {
+                "description": "API 域名",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "留空使用 jmcomic 内置域名；内置域名都无法访问时再手动填写，每项一个域名。",
+                "default": []
+            },
+            "image_threads": {
+                "description": "图片下载线程数",
+                "type": "int",
+                "hint": "有效范围 1-32。",
+                "default": 10
+            }
+        }
+    },
+    "pica": {
+        "description": "哔咔设置",
+        "type": "object",
+        "hint": "哔咔所有接口都需要登录，请使用专用小号；登录 Token 保存在插件数据目录，约 7 天自动续登。",
+        "items": {
+            "email": {
+                "description": "账号",
+                "type": "string",
+                "default": ""
+            },
+            "password": {
+                "description": "密码",
+                "type": "string",
+                "hint": "仅保存在本地配置中，不要公开分享配置文件。",
+                "default": ""
+            },
+            "image_quality": {
+                "description": "图片质量",
+                "type": "string",
+                "options": [
+                    "original",
+                    "high",
+                    "medium",
+                    "low"
+                ],
+                "hint": "original 为原图，体积最大。",
+                "default": "original"
+            },
+            "use_proxy": {
+                "description": "使用代理",
+                "type": "bool",
+                "default": true
+            }
+        }
+    },
+    "hanime1": {
+        "description": "Hanime1 设置",
+        "type": "object",
+        "hint": "里番以视频形式发送；QQ 等平台对视频 / 文件大小有限制，大文件建议选择“文件”或“仅链接”。",
+        "items": {
+            "default_genre": {
+                "description": "默认类型",
+                "type": "string",
+                "options": [
+                    "全部",
+                    "裏番",
+                    "泡麵番",
+                    "Motion Anime",
+                    "3DCG",
+                    "2.5D",
+                    "2D動畫",
+                    "AI生成",
+                    "MMD",
+                    "Cosplay"
+                ],
+                "hint": "搜索、排行和随机未指定“分类=”时使用。",
+                "default": "裏番"
+            },
+            "quality": {
+                "description": "目标清晰度",
+                "type": "string",
+                "options": [
+                    "1080",
+                    "720",
+                    "480"
+                ],
+                "hint": "选择不超过该清晰度的最高画质；未登录通常只有 480P，填写 Cookie 后可获取更高画质。",
+                "default": "1080"
+            },
+            "send_mode": {
+                "description": "发送方式",
+                "type": "string",
+                "options": [
+                    "视频",
+                    "文件",
+                    "仅链接"
+                ],
+                "hint": "“仅链接”不下载，直接发送有时效的视频地址。",
+                "default": "视频"
+            },
+            "max_size_mb": {
+                "description": "视频大小上限（MB）",
+                "type": "float",
+                "hint": "超过上限放弃下载，0 表示不限制。",
+                "default": 500
+            },
+            "cookie": {
+                "description": "Cookie",
+                "type": "string",
+                "hint": "可选，从已登录的浏览器复制完整 Cookie 字符串。",
+                "default": ""
+            },
+            "use_proxy": {
+                "description": "使用代理",
+                "type": "bool",
+                "default": true
+            }
+        }
+    },
+    "output": {
+        "description": "文件输出",
+        "type": "object",
+        "hint": "漫画类作品下载后打包的格式与质量。",
+        "items": {
+            "format": {
+                "description": "输出格式",
+                "type": "string",
+                "options": [
+                    "PDF",
+                    "ZIP",
+                    "PDF+ZIP"
+                ],
+                "hint": "ZIP 内为原图，不二次压缩。",
+                "default": "PDF"
+            },
+            "max_pages": {
+                "description": "单本最多下载页数",
+                "type": "int",
+                "hint": "超过时只下载前 N 页，0 表示不限制。",
+                "default": 0
+            },
+            "max_pages_per_pdf": {
+                "description": "单个 PDF 最大页数",
+                "type": "int",
+                "hint": "超过时拆分为多个 PDF，0 表示不拆分。",
+                "default": 200
+            },
+            "pdf_quality": {
+                "description": "PDF 图片质量",
+                "type": "int",
+                "hint": "JPEG 质量 1-100，85 左右兼顾体积与清晰度。",
+                "default": 85
+            },
+            "pdf_max_width": {
+                "description": "PDF 图片最大宽度（像素）",
+                "type": "int",
+                "hint": "超宽图片等比缩小以减小体积，0 表示不缩放。",
+                "default": 1600
+            }
+        }
+    },
+    "display": {
+        "description": "消息展示",
+        "type": "object",
+        "items": {
+            "show_cover": {
+                "description": "发送封面",
+                "type": "bool",
+                "hint": "作品信息与列表附带封面图。",
+                "default": true
+            },
+            "cover_blur": {
+                "description": "封面模糊程度",
+                "type": "int",
+                "hint": "高斯模糊半径 0-50，0 表示不模糊；适合不希望直接展示封面的群。",
+                "default": 0
+            },
+            "search_cover_grid": {
+                "description": "列表封面拼图",
+                "type": "bool",
+                "hint": "搜索和排行结果附带一张带序号的封面拼图。",
+                "default": true
+            },
+            "use_forward": {
+                "description": "使用合并转发",
+                "type": "bool",
+                "hint": "列表与多部作品使用合并转发发送（仅 QQ 个人号协议端生效，其余平台逐条发送）。",
+                "default": true
+            },
+            "list_size": {
+                "description": "列表最多显示条数",
+                "type": "int",
+                "hint": "有效范围 1-50；超出部分不显示，也不能用序号获取。",
+                "default": 20
+            },
+            "max_tags": {
+                "description": "最多显示标签数",
+                "type": "int",
+                "hint": "0 表示不显示标签。",
+                "default": 12
+            },
+            "show_description": {
+                "description": "显示简介",
+                "type": "bool",
+                "default": true
+            }
+        }
+    },
+    "random": {
+        "description": "随机设置",
+        "type": "object",
+        "items": {
+            "auto_fetch": {
+                "description": "随机后直接发送文件",
+                "type": "bool",
+                "hint": "关闭时只发送作品信息，用户可再发“看本 jm 123456”获取。",
+                "default": false
+            },
+            "pool": {
+                "description": "全随机候选源站",
+                "type": "object",
+                "hint": "“随机本子”未指定源站时，从下列已启用且可用的源站中随机挑选。",
+                "items": {
+                    "ehentai": {
+                        "description": "E-Hentai",
+                        "type": "bool",
+                        "default": true
+                    },
+                    "nhentai": {
+                        "description": "nhentai",
+                        "type": "bool",
+                        "default": true
+                    },
+                    "jmcomic": {
+                        "description": "JMComic",
+                        "type": "bool",
+                        "default": true
+                    },
+                    "pica": {
+                        "description": "哔咔",
+                        "type": "bool",
+                        "default": false
+                    },
+                    "hanime1": {
+                        "description": "Hanime1",
+                        "type": "bool",
+                        "default": false
+                    }
+                }
+            }
+        }
+    },
+    "push": {
+        "description": "自动推送",
+        "type": "object",
+        "hint": "按计划向群聊或私聊推送排行榜、条件作品或随机作品。发送“本子推送”查看任务，“本子推送 执行 1”手动测试。",
+        "items": {
+            "enable": {
+                "description": "启用自动推送",
+                "type": "bool",
+                "default": false
+            },
+            "platform_id": {
+                "description": "推送平台 ID",
+                "type": "string",
+                "hint": "“推送群号 / 推送用户”使用的平台适配器 ID；留空时自动选择第一个 QQ 个人号（aiocqhttp）平台。",
+                "default": ""
+            },
+            "tasks": {
+                "description": "推送任务",
+                "type": "template_list",
+                "hint": "点击添加并选择任务类型。推送时间与推送间隔二选一：间隔大于 0 时按间隔推送，否则按时间点推送。",
+                "default": [],
+                "templates": {
+                    "ranking": {
+                        "name": "排行榜推送",
+                        "hint": "定时推送某个源站排行榜的前 N 部。",
+                        "items": {
+                            "enabled": {
+                                "description": "启用",
+                                "type": "bool",
+                                "default": true
+                            },
+                            "name": {
+                                "description": "任务名称",
+                                "type": "string",
+                                "hint": "同时作为去重记录的标识，修改名称后会重新推送已推送过的作品。",
+                                "default": "每日排行"
+                            },
+                            "source": {
+                                "description": "源站",
+                                "type": "string",
+                                "options": [
+                                    "E-Hentai",
+                                    "nhentai",
+                                    "JMComic",
+                                    "哔咔",
+                                    "Hanime1"
+                                ],
+                                "default": "E-Hentai"
+                            },
+                            "period": {
+                                "description": "榜单",
+                                "type": "string",
+                                "options": [
+                                    "日榜",
+                                    "周榜",
+                                    "月榜",
+                                    "年榜",
+                                    "总榜"
+                                ],
+                                "hint": "E-Hentai：日/月/年/总；nhentai、JM、Hanime1：日/周/月/总；哔咔：日/周/月。",
+                                "default": "日榜"
+                            },
+                            "count": {
+                                "description": "推送数量",
+                                "type": "int",
+                                "hint": "1-20。",
+                                "default": 5
+                            },
+                            "only_new": {
+                                "description": "跳过已推送的作品",
+                                "type": "bool",
+                                "default": true
+                            },
+                            "with_files": {
+                                "description": "同时发送文件",
+                                "type": "bool",
+                                "hint": "开启后每部作品都会下载并发送 PDF / 视频，耗时与流量较大。",
+                                "default": false
+                            },
+                            "times": {
+                                "description": "推送时间",
+                                "type": "list",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "hint": "24 小时制，每项一个，例如 09:00。",
+                                "default": [
+                                    "09:00"
+                                ]
+                            },
+                            "interval_minutes": {
+                                "description": "推送间隔（分钟）",
+                                "type": "int",
+                                "hint": "大于 0 时忽略推送时间，从每天 00:00 起按间隔推送。",
+                                "default": 0
+                            },
+                            "groups": {
+                                "description": "推送群号",
+                                "type": "list",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "default": []
+                            },
+                            "users": {
+                                "description": "推送用户",
+                                "type": "list",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "hint": "私聊推送，通常需要是好友。",
+                                "default": []
+                            },
+                            "sessions": {
+                                "description": "推送会话 ID",
+                                "type": "list",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "hint": "高级：在目标会话发送“本子会话”获取，适用于非 QQ 平台。",
+                                "default": []
+                            }
+                        }
+                    },
+                    "search": {
+                        "name": "条件作品推送",
+                        "hint": "定时按条件搜索，推送最新的 N 部（默认跳过已推送的作品，适合追更作者或标签）。",
+                        "items": {
+                            "enabled": {
+                                "description": "启用",
+                                "type": "bool",
+                                "default": true
+                            },
+                            "name": {
+                                "description": "任务名称",
+                                "type": "string",
+                                "hint": "同时作为去重记录的标识。",
+                                "default": "条件追更"
+                            },
+                            "source": {
+                                "description": "源站",
+                                "type": "string",
+                                "options": [
+                                    "E-Hentai",
+                                    "nhentai",
+                                    "JMComic",
+                                    "哔咔",
+                                    "Hanime1"
+                                ],
+                                "default": "E-Hentai"
+                            },
+                            "keyword": {
+                                "description": "关键词",
+                                "type": "string",
+                                "hint": "支持源站自身的搜索语法，例如 E-Hentai 的 artist:xxx$ 或 language:chinese。",
+                                "default": ""
+                            },
+                            "category": {
+                                "description": "分类",
+                                "type": "string",
+                                "hint": "可选，写法同指令中的“分类=”。",
+                                "default": ""
+                            },
+                            "sort": {
+                                "description": "排序",
+                                "type": "string",
+                                "options": [
+                                    "默认",
+                                    "最新",
+                                    "热门",
+                                    "观看",
+                                    "点赞"
+                                ],
+                                "default": "最新"
+                            },
+                            "min_rating": {
+                                "description": "最低评分",
+                                "type": "int",
+                                "hint": "仅 E-Hentai 生效，0 表示不限。",
+                                "default": 0
+                            },
+                            "min_pages": {
+                                "description": "最少页数",
+                                "type": "int",
+                                "hint": "E-Hentai / nhentai 生效，0 表示不限。",
+                                "default": 0
+                            },
+                            "count": {
+                                "description": "推送数量",
+                                "type": "int",
+                                "default": 3
+                            },
+                            "only_new": {
+                                "description": "跳过已推送的作品",
+                                "type": "bool",
+                                "default": true
+                            },
+                            "with_files": {
+                                "description": "同时发送文件",
+                                "type": "bool",
+                                "default": false
+                            },
+                            "times": {
+                                "description": "推送时间",
+                                "type": "list",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "default": [
+                                    "20:00"
+                                ]
+                            },
+                            "interval_minutes": {
+                                "description": "推送间隔（分钟）",
+                                "type": "int",
+                                "default": 0
+                            },
+                            "groups": {
+                                "description": "推送群号",
+                                "type": "list",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "default": []
+                            },
+                            "users": {
+                                "description": "推送用户",
+                                "type": "list",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "default": []
+                            },
+                            "sessions": {
+                                "description": "推送会话 ID",
+                                "type": "list",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "default": []
+                            }
+                        }
+                    },
+                    "random": {
+                        "name": "随机作品推送",
+                        "hint": "定时推送随机作品，可全随机，也可限定源站与条件。",
+                        "items": {
+                            "enabled": {
+                                "description": "启用",
+                                "type": "bool",
+                                "default": true
+                            },
+                            "name": {
+                                "description": "任务名称",
+                                "type": "string",
+                                "default": "每日随机"
+                            },
+                            "source": {
+                                "description": "源站",
+                                "type": "string",
+                                "options": [
+                                    "全部",
+                                    "E-Hentai",
+                                    "nhentai",
+                                    "JMComic",
+                                    "哔咔",
+                                    "Hanime1"
+                                ],
+                                "hint": "“全部”从“随机设置 → 全随机候选源站”中挑选。",
+                                "default": "全部"
+                            },
+                            "keyword": {
+                                "description": "关键词",
+                                "type": "string",
+                                "hint": "留空为完全随机。",
+                                "default": ""
+                            },
+                            "category": {
+                                "description": "分类",
+                                "type": "string",
+                                "default": ""
+                            },
+                            "count": {
+                                "description": "推送数量",
+                                "type": "int",
+                                "default": 1
+                            },
+                            "only_new": {
+                                "description": "跳过已推送的作品",
+                                "type": "bool",
+                                "default": false
+                            },
+                            "with_files": {
+                                "description": "同时发送文件",
+                                "type": "bool",
+                                "default": false
+                            },
+                            "times": {
+                                "description": "推送时间",
+                                "type": "list",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "default": [
+                                    "12:00"
+                                ]
+                            },
+                            "interval_minutes": {
+                                "description": "推送间隔（分钟）",
+                                "type": "int",
+                                "default": 0
+                            },
+                            "groups": {
+                                "description": "推送群号",
+                                "type": "list",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "default": []
+                            },
+                            "users": {
+                                "description": "推送用户",
+                                "type": "list",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "default": []
+                            },
+                            "sessions": {
+                                "description": "推送会话 ID",
+                                "type": "list",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "default": []
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "permission": {
+        "description": "权限控制",
+        "type": "object",
+        "hint": "优先级：管理员 > 个人白名单 > 个人黑名单 > 群白名单 > 群黑名单；开启白名单后未命中的会话全部拒绝。",
+        "items": {
+            "admin_id": {
+                "description": "管理员 ID",
+                "type": "string",
+                "hint": "可使用“本子推送”“本子清理缓存”，且不受冷却限制；AstrBot 管理员同样有效。",
+                "default": ""
+            },
+            "whitelist": {
+                "description": "白名单",
+                "type": "object",
+                "items": {
+                    "enable": {
+                        "description": "启用",
+                        "type": "bool",
+                        "default": false
+                    },
+                    "user": {
+                        "description": "用户",
+                        "type": "list",
+                        "items": {
+                            "type": "string"
+                        },
+                        "condition": {
+                            "enable": true
+                        },
+                        "default": []
+                    },
+                    "group": {
+                        "description": "群组",
+                        "type": "list",
+                        "items": {
+                            "type": "string"
+                        },
+                        "condition": {
+                            "enable": true
+                        },
+                        "default": []
+                    }
+                }
+            },
+            "blacklist": {
+                "description": "黑名单",
+                "type": "object",
+                "items": {
+                    "enable": {
+                        "description": "启用",
+                        "type": "bool",
+                        "default": false
+                    },
+                    "user": {
+                        "description": "用户",
+                        "type": "list",
+                        "items": {
+                            "type": "string"
+                        },
+                        "condition": {
+                            "enable": true
+                        },
+                        "default": []
+                    },
+                    "group": {
+                        "description": "群组",
+                        "type": "list",
+                        "items": {
+                            "type": "string"
+                        },
+                        "condition": {
+                            "enable": true
+                        },
+                        "default": []
+                    }
+                }
+            }
+        }
+    },
+    "cache": {
+        "description": "缓存设置",
+        "type": "object",
+        "items": {
+            "cache_dir": {
+                "description": "缓存目录",
+                "type": "string",
+                "hint": "留空：普通部署使用 AstrBot 插件数据目录，Docker 使用 /app/sharedFolder/astrbot_plugin_hentai_collector/cache。Docker 部署时 AstrBot 与消息平台（如 NapCat）必须挂载同一路径，否则文件发不出去。",
+                "default": ""
+            },
+            "keep_hours": {
+                "description": "已生成文件保留时长（小时）",
+                "type": "float",
+                "hint": "保留期内重复请求同一作品直接发送缓存文件；0 表示发送后约 5 分钟清理。",
+                "default": 24
+            }
+        }
+    },
+    "limits": {
+        "description": "使用限制",
+        "type": "object",
+        "items": {
+            "max_concurrent_jobs": {
+                "description": "同时处理作品数",
+                "type": "int",
+                "hint": "同时下载打包的作品数量，有效范围 1-8。",
+                "default": 2
+            },
+            "user_cooldown_seconds": {
+                "description": "获取文件冷却（秒）",
+                "type": "int",
+                "hint": "同一用户两次获取文件的最小间隔，0 表示不限制；管理员不受限制。",
+                "default": 0
+            },
+            "session_minutes": {
+                "description": "搜索结果有效期（分钟）",
+                "type": "int",
+                "hint": "超过后“看本 序号”“本子翻页”需要重新搜索。",
+                "default": 30
+            }
+        }
+    }
+}

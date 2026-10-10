@@ -1,0 +1,28 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+
+# 虚拟环境与工具缓存
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# 本地运行数据与缓存
+cache/
+data/
+
+# 本地测试目录
+/test/
+
+# 临时文件
+*.tmp
+*.part
+*.log
