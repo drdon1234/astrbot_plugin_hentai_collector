@@ -243,10 +243,14 @@ class WorkService:
         files = manifest["files"]
         if work.media_type == MediaType.VIDEO:
             return FetchResult(work=work, video=files[0], from_cache=True)
+        if "truncated" not in manifest:
+            # 无法确认截断状态的缓存需重建，避免把不完整文件当作完整结果发送。
+            return None
         return FetchResult(
             work=work,
             files=files,
             missing=int(manifest.get("missing") or 0),
+            truncated=int(manifest["truncated"]),
             page_count=int(manifest.get("page_count") or 0),
             from_cache=True,
         )
@@ -288,10 +292,16 @@ class WorkService:
                 files,
                 self._signature(work),
                 self.retention_seconds,
-                {"missing": missing, "page_count": len(bundle.images) - broken},
+                {"missing": missing, "truncated": bundle.truncated, "page_count": len(bundle.images) - broken},
             )
             succeeded = True
-            return FetchResult(work=work, files=files, missing=missing, page_count=len(bundle.images) - broken)
+            return FetchResult(
+                work=work,
+                files=files,
+                missing=missing,
+                truncated=bundle.truncated,
+                page_count=len(bundle.images) - broken,
+            )
         finally:
             if not succeeded:
                 self.job_store.mark_expire(job, Config.MIN_FILE_RETENTION_SECONDS)

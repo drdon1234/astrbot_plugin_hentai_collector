@@ -526,9 +526,10 @@ class HentaiCollectorPlugin(Star):
             await self._delivery(event).text(usage)
             return
         work = await self._load_work(target)
-        await self.presenter.send_card(self._delivery(event), work)
         if with_files:
             await self._send_and_fetch(event, work)
+        else:
+            await self.presenter.send_card(self._delivery(event), work)
 
     @filter.command(CMD_GET, alias=COMMAND_ALIASES[CMD_GET])
     async def cmd_get(self, event: AstrMessageEvent):

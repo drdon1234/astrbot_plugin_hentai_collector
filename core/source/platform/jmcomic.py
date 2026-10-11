@@ -280,7 +280,9 @@ class JmComicSource(BaseSource):
         images = _iter_images(base_dir)
         if not images:
             raise WorkNotFound(f"JM{work.work_id} 下载完成但没有找到图片")
+        truncated = 0
         if ctx.max_pages > 0 and len(images) > ctx.max_pages:
+            truncated = len(images) - ctx.max_pages
             logger.info(f"JM{work.work_id} 共 {len(images)} 页，按配置截取前 {ctx.max_pages} 页")
             images = images[: ctx.max_pages]
-        return MediaBundle(work=work, images=images)
+        return MediaBundle(work=work, images=images, truncated=truncated)

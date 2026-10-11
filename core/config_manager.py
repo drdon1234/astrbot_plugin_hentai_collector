@@ -168,7 +168,7 @@ class BasicConfig:
     auto_parse: bool = True
     parse_jm_code: bool = True
     link_action: str = LINK_ACTION_FULL
-    send_progress: bool = True
+    send_progress: bool = False
 
     @property
     def send_files_on_link(self) -> bool:
@@ -360,7 +360,7 @@ class ConfigManager:
             auto_parse=as_bool(section.get("auto_parse"), True),
             parse_jm_code=as_bool(section.get("parse_jm_code"), True),
             link_action=as_choice(section.get("link_action"), (LINK_ACTION_FULL, LINK_ACTION_INFO), LINK_ACTION_FULL),
-            send_progress=as_bool(section.get("send_progress"), True),
+            send_progress=as_bool(section.get("send_progress"), False),
         )
 
     @staticmethod

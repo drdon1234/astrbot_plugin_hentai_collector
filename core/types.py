@@ -188,6 +188,7 @@ class MediaBundle:
         video: 本地视频文件
         link: 不下载时直接发送的播放 / 下载链接
         missing: 下载失败的页数
+        truncated: 因页数上限跳过的页数
     """
 
     work: WorkInfo
@@ -195,16 +196,22 @@ class MediaBundle:
     video: Optional[Path] = None
     link: str = ""
     missing: int = 0
+    truncated: int = 0
 
 
 @dataclass
 class FetchResult:
-    """业务层“获取作品”的最终结果：可直接发送的文件或链接。"""
+    """业务层“获取作品”的最终结果：可直接发送的文件或链接。
+
+    Attributes:
+        truncated: 因页数上限跳过的页数，与下载失败页数分开统计
+    """
 
     work: WorkInfo
     files: list[Path] = field(default_factory=list)
     video: Optional[Path] = None
     link: str = ""
     missing: int = 0
+    truncated: int = 0
     page_count: int = 0
     from_cache: bool = False

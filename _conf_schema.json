@@ -29,8 +29,8 @@
             "send_progress": {
                 "description": "发送进度提示",
                 "type": "bool",
-                "hint": "下载与打包过程中发送“开始获取 / 下载进度 / 正在生成文件”等提示。",
-                "default": true
+                "hint": "默认关闭；开启后在下载与打包过程中发送“开始获取 / 下载进度 / 正在生成文件”等提示。",
+                "default": false
             }
         }
     },

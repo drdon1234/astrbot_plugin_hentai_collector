@@ -109,28 +109,29 @@ def format_work_card(
 
 
 def format_list_entry(index: int, work: WorkInfo, short: str) -> str:
-    """生成列表中的单条作品摘要。"""
+    """生成单条作品摘要，将标题、统计与描述字段分行展示。"""
     meta = [short]
     if work.pages:
         meta.append(f"{work.pages}页")
     if work.duration:
-        meta.append(work.duration)
+        meta.append(f"时长 {work.duration}")
     if work.rating is not None:
         meta.append(f"★{work.rating:.1f}")
     if work.likes is not None:
         meta.append(f"♥{format_count(work.likes)}")
     if work.views is not None:
         meta.append(f"▶{format_count(work.views)}")
+    lines = [f"[{index}] {work.title}", " · ".join(meta)]
     if work.category:
-        meta.append(work.category)
+        lines.append(f"分类：{work.category}")
     if work.author:
-        meta.append(work.author)
+        lines.append(f"作者：{work.author}")
     if work.uploaded:
-        meta.append(work.uploaded)
-    return f"[{index}] {work.title}\n    {' · '.join(meta)}"
+        lines.append(f"发布：{work.uploaded}")
+    return "\n".join(lines)
 
 
-def format_work_list(
+def format_list_blocks(
     page: WorkPage,
     shorts: dict[str, str],
     get_command: str,
@@ -138,8 +139,8 @@ def format_work_list(
     *,
     start: int = 1,
     tips: bool = True,
-) -> str:
-    """生成列表文本（标题、条目与操作提示）。
+) -> list[str]:
+    """生成列表文本块（标题、各条作品与操作提示）。
 
     Args:
         page: 列表页
@@ -150,19 +151,19 @@ def format_work_list(
         tips: 是否附带操作提示（聚合列表的提示放在总标题中）
 
     Returns:
-        多行文本
+        文本块列表，合并转发时逐块发送，普通消息以空行连接
     """
     header = page.title or "作品列表"
     if page.total_pages:
-        header += f"（第 {page.page}/{page.total_pages} 页）"
+        header += f"\n（第 {page.page}/{page.total_pages} 页）"
     else:
-        header += f"（第 {page.page} 页）"
-    lines = [header]
+        header += f"\n（第 {page.page} 页）"
+    blocks = [header]
     for index, work in enumerate(page.items, start):
-        lines.append(format_list_entry(index, work, shorts.get(work.source, work.source)))
+        blocks.append(format_list_entry(index, work, shorts.get(work.source, work.source)))
     if tips:
-        lines.append("—— " + list_tips(get_command, page_command, page.page, page.has_next))
-    return "\n".join(lines)
+        blocks.append(list_tips(get_command, page_command, page.page, page.has_next))
+    return blocks
 
 
 def list_tips(get_command: str, page_command: str, page: int, has_next: bool) -> str:
@@ -170,7 +171,7 @@ def list_tips(get_command: str, page_command: str, page: int, has_next: bool) ->
     tips = [f"发送「{get_command} 序号」获取作品"]
     if has_next:
         tips.append(f"「{page_command} {page + 1}」查看下一页")
-    return "，".join(tips)
+    return "\n".join(tips)
 
 
 def format_aggregate_header(title: str, page: int, summary: list[tuple[str, str]], tips: str) -> str:
@@ -185,11 +186,12 @@ def format_aggregate_header(title: str, page: int, summary: list[tuple[str, str]
     Returns:
         多行文本
     """
-    lines = [f"{title}（第 {page} 页）" if page else title]
-    lines += [f"· {name}：{state}" for name, state in summary]
+    blocks = [f"{title}\n（第 {page} 页）" if page else title]
+    if summary:
+        blocks.append("\n".join(f"· {name}：{state}" for name, state in summary))
     if tips:
-        lines.append("—— " + tips)
-    return "\n".join(lines)
+        blocks.append(tips)
+    return "\n\n".join(blocks)
 
 
 def format_fetch_summary(result: FetchResult) -> str:
@@ -206,6 +208,8 @@ def format_fetch_summary(result: FetchResult) -> str:
         parts.append(f"{len(result.files)} 个文件")
     if result.missing:
         parts.append(f"{result.missing} 页下载失败已跳过")
+    if result.truncated:
+        parts.append(f"因页数上限跳过 {result.truncated} 页")
     if result.from_cache:
         parts.append("使用缓存")
     return "，".join(parts) + "，正在发送…"

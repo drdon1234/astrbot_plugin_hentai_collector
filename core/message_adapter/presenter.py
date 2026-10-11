@@ -16,8 +16,8 @@ from .cover_grid import build_cover_grid, process_cover
 from .formatter import (
     format_aggregate_header,
     format_fetch_summary,
+    format_list_blocks,
     format_work_card,
-    format_work_list,
     list_tips,
 )
 from .sender import Delivery
@@ -40,7 +40,7 @@ class PresenterOptions:
     max_tags: int = 12
     show_description: bool = True
     video_as_file: bool = False
-    send_progress: bool = True
+    send_progress: bool = False
     nested_forward: bool = True
     get_command: str = "看本"
     page_command: str = "翻页"
@@ -151,14 +151,28 @@ class WorkPresenter:
     def _shorts(self) -> dict[str, str]:
         return {source.key: source.short for source in self.sources}
 
+    def _list_contents(
+        self,
+        page: WorkPage,
+        grid: Optional[bytes],
+        *,
+        separate_entries: bool,
+        start: int = 1,
+        tips: bool = True,
+    ) -> list[list]:
+        """统一构造单站与聚合列表：转发逐条展示，普通消息按块留白。"""
+        blocks = format_list_blocks(
+            page, self._shorts(), self.options.get_command, self.options.page_command, start=start, tips=tips
+        )
+        covers = [[Image.fromBytes(grid)]] if grid else []
+        if separate_entries:
+            return [[Plain(blocks[0])]] + covers + [[Plain(block)] for block in blocks[1:]]
+        return covers + [[Plain("\n\n".join(blocks))]]
+
     async def send_list(self, delivery: Delivery, page: WorkPage) -> None:
-        """发送单站作品列表：带序号的封面拼图 + 文本列表。"""
-        text = format_work_list(page, self._shorts(), self.options.get_command, self.options.page_command)
+        """发送单站作品列表：标题、封面拼图、分条摘要与操作提示。"""
         grid = (await self._grids([(page.items, 1)]))[0]
-        contents: list[list] = []
-        if grid:
-            contents.append([Image.fromBytes(grid)])
-        contents.append([Plain(text)])
+        contents = self._list_contents(page, grid, separate_entries=delivery.supports_forward)
         if delivery.supports_forward:
             await delivery.forward(contents)
             return
@@ -195,10 +209,9 @@ class WorkPresenter:
         grids = await self._grids([(r.items, start) for r, start in listed])
         sections = []
         for (r, start), grid in zip(listed, grids, strict=True):
-            text = format_work_list(
-                r.page, self._shorts(), self.options.get_command, self.options.page_command, start=start, tips=False
+            contents = self._list_contents(
+                r.page, grid, separate_entries=delivery.supports_forward, start=start, tips=False
             )
-            contents = ([[Image.fromBytes(grid)]] if grid else []) + [[Plain(text)]]
             sections.append((self._source_name(r.source), contents))
         await delivery.forward_sections([Plain(header)], sections, nested=self.options.nested_forward)
 
@@ -228,7 +241,7 @@ class WorkPresenter:
             kind = "视频" if work.media_type == MediaType.VIDEO else "本子"
             await delivery.safe_text(f"开始获取{kind}《{work.title}》，请稍候…")
         result = await self.service.fetch(work, progress)
-        if send_progress or result.link:
+        if send_progress or result.link or result.missing or result.truncated:
             await delivery.safe_text(format_fetch_summary(result))
         if result.video is not None:
             if self.options.video_as_file:

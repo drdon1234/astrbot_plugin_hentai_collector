@@ -7,7 +7,7 @@ class Config:
     """全局常量，集中管理路径、超时、并发与消息长度等默认值。"""
 
     PLUGIN_NAME = "astrbot_plugin_hentai_collector"
-    PLUGIN_VERSION = "1.1.0"
+    PLUGIN_VERSION = "1.1.1"
     BOT_DISPLAY_NAME = "本子聚合bot"
 
     # ── 路径 ──────────────────────────────────────────

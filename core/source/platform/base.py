@@ -176,8 +176,9 @@ class BaseSource(ABC):
         tasks = await self.list_images(work)
         if not tasks:
             raise WorkNotFound(f"{self.name} 作品没有可下载的图片")
+        truncated = 0
         if ctx.max_pages > 0 and len(tasks) > ctx.max_pages:
-            await ctx.progress(f"作品共 {len(tasks)} 页，按配置只下载前 {ctx.max_pages} 页")
+            truncated = len(tasks) - ctx.max_pages
             tasks = tasks[: ctx.max_pages]
 
         async def report(done: int, total: int) -> None:
@@ -186,7 +187,7 @@ class BaseSource(ABC):
         images, missing = await ctx.image_downloader.download_all(
             tasks, ctx.work_dir / "images", self.http, report
         )
-        return MediaBundle(work=work, images=images, missing=missing)
+        return MediaBundle(work=work, images=images, missing=missing, truncated=truncated)
 
     async def close(self) -> None:
         """释放网络资源。"""
