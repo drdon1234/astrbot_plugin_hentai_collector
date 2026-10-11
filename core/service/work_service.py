@@ -335,7 +335,7 @@ class WorkService:
         """并发下载封面（每个源站独立限流，聚合列表中各站并行），失败的位置返回 None。
 
         网络错误、5xx 与返回内容不是图片时重试，明确的 4xx 不重试；
-        失败汇总记录 warning，便于排查拼图中的灰色占位。
+        失败汇总记录 warning，展示时跳过缺失封面并保留作品信息。
         """
         semaphores = {work.source: asyncio.Semaphore(Config.COVER_DOWNLOAD_CONCURRENCY) for work in works}
         failures: list[str] = []
@@ -371,5 +371,5 @@ class WorkService:
 
         covers = list(await asyncio.gather(*(one(work) for work in works)))
         if failures:
-            logger.warning(f"{len(failures)}/{len(works)} 张封面下载失败，以灰色占位：{'；'.join(failures[:5])}")
+            logger.warning(f"{len(failures)}/{len(works)} 张封面下载失败，已跳过这些封面：{'；'.join(failures[:5])}")
         return covers

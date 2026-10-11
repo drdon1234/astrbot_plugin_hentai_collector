@@ -8,6 +8,7 @@ TARGET_HEIGHT = 420
 GRID_COLUMNS = 5
 GRID_PADDING = 8
 JPEG_QUALITY = 85
+BLANK_CHANNEL_RANGE = 2
 FONT_CANDIDATES = ("msyh.ttc", "arial.ttf", "DejaVuSans-Bold.ttf", "NotoSansCJK-Regular.ttc")
 
 
@@ -25,12 +26,22 @@ def _load_font(size: int):
         return ImageFont.load_default()
 
 
-def _open_rgb(data: bytes):
+def _open_cover(data: bytes):
+    """完整解码封面，按可见像素剔除纯色及近乎纯色的空白图片。"""
     from PIL import Image
 
-    image = Image.open(BytesIO(data))
-    image.seek(0)
-    return image.convert("RGB")
+    with Image.open(BytesIO(data)) as source:
+        source.seek(0)
+        if "A" in source.getbands() or "transparency" in source.info:
+            rgba = source.convert("RGBA")
+            background = Image.new("RGBA", source.size, (255, 255, 255, 255))
+            image = Image.alpha_composite(background, rgba).convert("RGB")
+        else:
+            image = source.convert("RGB")
+    # 检查完整图像，避免缩略图或模糊抹去细小文字后误判正常封面。
+    if all(high - low <= BLANK_CHANNEL_RANGE for low, high in image.getextrema()):
+        return None
+    return image
 
 
 def _blur(image, radius: int):
@@ -40,12 +51,14 @@ def _blur(image, radius: int):
 
 
 def process_cover(data: bytes, blur_radius: int = 0, max_height: int = 800) -> Optional[bytes]:
-    """缩放并按需模糊单张封面，返回 JPEG 字节；无法解码时返回 None。"""
+    """缩放并按需模糊单张封面，返回 JPEG 字节；损坏或空白时返回 None。"""
     from PIL import Image
 
     try:
-        image = _open_rgb(data)
+        image = _open_cover(data)
     except (OSError, ValueError, Image.DecompressionBombError):
+        return None
+    if image is None:
         return None
     if image.height > max_height:
         image.thumbnail((max_height * 4, max_height), Image.Resampling.LANCZOS)
@@ -74,7 +87,7 @@ def build_cover_grid(covers: list[Optional[bytes]], blur_radius: int = 0, start:
     """把封面按 5 列拼接为一张带序号的图片，序号与列表序号一致。
 
     Args:
-        covers: 与列表同序的封面字节，缺失位置为 None（以灰色占位）
+        covers: 与列表同序的封面字节；缺失、损坏或空白封面跳过，保留原作品序号
         blur_radius: 高斯模糊半径，0 表示不模糊
         start: 第一张封面的序号（聚合列表中各站序号连续）
 
@@ -84,33 +97,31 @@ def build_cover_grid(covers: list[Optional[bytes]], blur_radius: int = 0, start:
     from PIL import Image
 
     tiles = []
-    for data in covers:
-        image = None
-        if data:
-            try:
-                image = _open_rgb(data)
-            except (OSError, ValueError, Image.DecompressionBombError):
-                image = None
-        tiles.append(image)
-    if not any(tiles):
+    for number, data in enumerate(covers, start):
+        if not data:
+            continue
+        try:
+            image = _open_cover(data)
+        except (OSError, ValueError, Image.DecompressionBombError):
+            continue
+        if image is not None:
+            tiles.append((number, image))
+    if not tiles:
         return None
 
     tile_width = int(TARGET_HEIGHT * 0.7)
     prepared = []
-    for number, image in enumerate(tiles, start):
-        if image is None:
-            image = Image.new("RGB", (tile_width, TARGET_HEIGHT), (90, 90, 90))
-        else:
-            image = image.resize(
-                (max(1, int(image.width * TARGET_HEIGHT / image.height)), TARGET_HEIGHT),
-                Image.Resampling.LANCZOS,
-            )
-            image = image.crop((0, 0, min(image.width, tile_width), TARGET_HEIGHT))
-            if image.width < tile_width:
-                canvas = Image.new("RGB", (tile_width, TARGET_HEIGHT), (40, 40, 40))
-                canvas.paste(image, ((tile_width - image.width) // 2, 0))
-                image = canvas
-            image = _blur(image, blur_radius)
+    for number, image in tiles:
+        image = image.resize(
+            (max(1, int(image.width * TARGET_HEIGHT / image.height)), TARGET_HEIGHT),
+            Image.Resampling.LANCZOS,
+        )
+        image = image.crop((0, 0, min(image.width, tile_width), TARGET_HEIGHT))
+        if image.width < tile_width:
+            canvas = Image.new("RGB", (tile_width, TARGET_HEIGHT), (40, 40, 40))
+            canvas.paste(image, ((tile_width - image.width) // 2, 0))
+            image = canvas
+        image = _blur(image, blur_radius)
         prepared.append(_draw_number(image, number))
 
     rows = (len(prepared) + GRID_COLUMNS - 1) // GRID_COLUMNS

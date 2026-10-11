@@ -1,7 +1,7 @@
 name: astrbot_plugin_hentai_collector
 display_name: 本子与里番聚合
 desc: 聚合 E-Hentai / nhentai / JMComic / 哔咔 / Hanime1，单站或全站聚合搜索、排行榜、随机，链接解析发送 PDF 与定时推送
-version: 1.1.1
+version: 1.1.2
 astrbot_version: ">=4,<5"
 author: drdon1234
 repo: https://github.com/drdon1234/astrbot_plugin_hentai_collector
