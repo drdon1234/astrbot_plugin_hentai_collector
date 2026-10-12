@@ -7,7 +7,7 @@ class Config:
     """全局常量，集中管理路径、超时、并发与消息长度等默认值。"""
 
     PLUGIN_NAME = "astrbot_plugin_hentai_collector"
-    PLUGIN_VERSION = "1.1.2"
+    PLUGIN_VERSION = "1.2.0"
     BOT_DISPLAY_NAME = "本子聚合bot"
 
     # ── 路径 ──────────────────────────────────────────
@@ -33,6 +33,7 @@ class Config:
     MIN_IMAGE_BYTES = 256
     DEFAULT_MAX_CONCURRENT_JOBS = 2
     COVER_DOWNLOAD_CONCURRENCY = 6
+    COVER_DOWNLOAD_BUDGET = 10
     COVER_TIMEOUT = 20
     COVER_RETRIES = 1
     MAX_FILENAME_LENGTH = 120
@@ -50,6 +51,7 @@ class Config:
     SEND_INTERVAL = 0.4
     RANDOM_PAGE_LIMIT = 50
     AGGREGATE_TIMEOUT = 90
+    OPERATION_NOTICE_DELAY = 3.0
 
     @staticmethod
     def build_cache_dir(prefix: str) -> str:

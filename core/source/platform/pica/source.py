@@ -109,8 +109,9 @@ class PicaSource(BaseSource):
             body["categories"] = [query.category.strip()]
         if not body["keyword"] and query.category.strip():
             path = f"comics?page={page}&c={quote(query.category.strip())}&s={body['sort']}"
-            return self._page((await self.client.request(path)).get("comics") or {}, page)
-        data = await self.client.request(f"comics/advanced-search?page={page}", body)
+            data = await self.client.request(path)
+        else:
+            data = await self.client.request(f"comics/advanced-search?page={page}", body)
         result = self._page(data.get("comics") or {}, page)
         if query.exclude:
             lowered = [word.lower() for word in query.exclude]
@@ -136,25 +137,36 @@ class PicaSource(BaseSource):
 
     # ── 内容获取 ──────────────────────────────────────
 
-    async def _episode_urls(self, work_id: str, order: int) -> list[str]:
-        """一话的全部图片地址：先取第一页得到总数，其余页并发取。"""
+    async def _episode_urls(self, work_id: str, order: int, max_pages: int = 0) -> list[str]:
+        """读取一话图片列表，有上限时只请求仍需发现的分页。"""
         first = (await self.client.request(f"comics/{work_id}/order/{order}/pages?page=1")).get("pages") or {}
         total_pages = to_int(first.get("pages"), 1) or 1
-        rest = await asyncio.gather(
-            *(
-                self.client.request(f"comics/{work_id}/order/{order}/pages?page={page}")
-                for page in range(2, total_pages + 1)
-            )
-        )
         docs = list(first.get("docs") or [])
-        for data in rest:
-            docs.extend((data.get("pages") or {}).get("docs") or [])
-        return [media_url(doc.get("media") or {}) for doc in docs if isinstance(doc, dict)]
+        if max_pages > 0:
+            for page in range(2, total_pages + 1):
+                if len(docs) >= max_pages:
+                    break
+                data = await self.client.request(f"comics/{work_id}/order/{order}/pages?page={page}")
+                docs.extend((data.get("pages") or {}).get("docs") or [])
+            docs = docs[:max_pages]
+        else:
+            rest = await asyncio.gather(
+                *(
+                    self.client.request(f"comics/{work_id}/order/{order}/pages?page={page}")
+                    for page in range(2, total_pages + 1)
+                )
+            )
+            for data in rest:
+                docs.extend((data.get("pages") or {}).get("docs") or [])
+        return [media_url(doc.get("media") or {}) if isinstance(doc, dict) else "" for doc in docs]
 
-    async def list_images(self, work: WorkInfo) -> list[ImageTask]:
+    async def list_images(self, work: WorkInfo, max_pages: int = 0) -> list[ImageTask]:
         if not work.detailed:
             work = await self.get_work(work.work_id)
         urls: list[str] = []
         for order in range(1, int(work.extra.get("eps", 1)) + 1):
-            urls.extend(url for url in await self._episode_urls(work.work_id, order) if url)
-        return [ImageTask(index=index, urls=[url]) for index, url in enumerate(urls, 1)]
+            remaining = max_pages - len(urls) if max_pages > 0 else 0
+            if max_pages > 0 and remaining <= 0:
+                break
+            urls.extend(await self._episode_urls(work.work_id, order, remaining))
+        return [ImageTask(index=index, urls=[url]) for index, url in enumerate(urls, 1) if url]

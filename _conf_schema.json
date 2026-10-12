@@ -2,7 +2,7 @@
     "basic": {
         "description": "基础设置",
         "type": "object",
-        "hint": "控制链接自动解析与进度提示。指令列表可发送“本子帮助”查看。",
+        "hint": "控制链接自动解析与进度提示。发送当前帮助指令查看操作说明（默认“本子帮助”，可在“指令触发词”中调整）。",
         "items": {
             "auto_parse": {
                 "description": "自动解析作品链接",
@@ -13,7 +13,7 @@
             "parse_jm_code": {
                 "description": "识别 JM 编号",
                 "type": "bool",
-                "hint": "开启后消息中的“JM123456”“jm 123456”也会被自动解析；纯数字不会被识别。",
+                "hint": "控制普通消息中的“JM123456”“jm 123456”自动识别；纯数字不识别。关闭后仍可使用站点获取指令加作品编号。",
                 "default": true
             },
             "link_action": {
@@ -23,7 +23,7 @@
                     "发送信息和文件",
                     "仅发送信息"
                 ],
-                "hint": "“仅发送信息”只发封面与作品信息，用户需再发“看本 序号/链接”获取文件。",
+                "hint": "“仅发送信息”只发封面与作品信息；请复制卡片中的获取指令，或使用获取指令加原作品链接下载。",
                 "default": "发送信息和文件"
             },
             "send_progress": {
@@ -31,6 +31,596 @@
                 "type": "bool",
                 "hint": "默认关闭；开启后在下载与打包过程中发送“开始获取 / 下载进度 / 正在生成文件”等提示。",
                 "default": false
+            }
+        }
+    },
+    "commands": {
+        "description": "指令触发词",
+        "type": "object",
+        "hint": "默认使用内置触发词；需要自定义时展开设置。每个操作支持多个名称，第一项用于提示。AstrBot 指令管理中保存的改名、别名和禁用设置优先。",
+        "items": {
+            "show_settings": {
+                "description": "展开触发词设置",
+                "type": "bool",
+                "hint": "仅控制配置面板显示；收起不会停用指令或清空已填写的触发词。",
+                "default": false
+            },
+            "help": {
+                "description": "查看帮助",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "本子帮助",
+                    "hc",
+                    "hc帮助",
+                    "里番帮助"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "page": {
+                "description": "翻阅最近列表",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "翻页",
+                    "本子翻页"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "get": {
+                "description": "下载并发送文件",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "看本",
+                    "本子下载",
+                    "获取本子",
+                    "看里番"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "detail": {
+                "description": "查看作品信息",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "本子详情",
+                    "详情"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "session": {
+                "description": "查看当前会话 ID",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "本子会话"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "push": {
+                "description": "查看或执行推送任务",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "本子推送"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "clean": {
+                "description": "清理全部缓存",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "本子清理缓存"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "search_comic": {
+                "description": "全部本子搜索",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "搜本子",
+                    "搜本"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "ranking_comic": {
+                "description": "全部本子排行榜",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "排行本子",
+                    "本子排行",
+                    "本子排行榜",
+                    "排行榜"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "random_comic": {
+                "description": "全部本子随机",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "随机本子",
+                    "随机本"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "search_video": {
+                "description": "全部里番搜索",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "搜里番"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "ranking_video": {
+                "description": "全部里番排行榜",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "排行里番",
+                    "里番排行",
+                    "里番排行榜"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "random_video": {
+                "description": "全部里番随机",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "随机里番"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "search_ehentai": {
+                "description": "E-Hentai 搜索",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "搜eh",
+                    "搜ex"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "ranking_ehentai": {
+                "description": "E-Hentai 排行榜",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "排行eh",
+                    "排行ex"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "random_ehentai": {
+                "description": "E-Hentai 随机",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "随机eh",
+                    "随机ex"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "get_ehentai": {
+                "description": "E-Hentai 下载并发送文件",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "看eh",
+                    "看ex"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "detail_ehentai": {
+                "description": "E-Hentai 查看作品信息",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "详情eh",
+                    "详情ex"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "search_nhentai": {
+                "description": "nhentai 搜索",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "搜nh"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "ranking_nhentai": {
+                "description": "nhentai 排行榜",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "排行nh"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "random_nhentai": {
+                "description": "nhentai 随机",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "随机nh"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "get_nhentai": {
+                "description": "nhentai 下载并发送文件",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "看nh"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "detail_nhentai": {
+                "description": "nhentai 查看作品信息",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "详情nh"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "search_jmcomic": {
+                "description": "JMComic 搜索",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "搜jm",
+                    "搜禁漫"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "ranking_jmcomic": {
+                "description": "JMComic 排行榜",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "排行jm",
+                    "排行禁漫"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "random_jmcomic": {
+                "description": "JMComic 随机",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "随机jm",
+                    "随机禁漫"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "get_jmcomic": {
+                "description": "JMComic 下载并发送文件",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "看jm",
+                    "看禁漫"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "detail_jmcomic": {
+                "description": "JMComic 查看作品信息",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "详情jm",
+                    "详情禁漫"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "search_pica": {
+                "description": "哔咔 搜索",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "搜哔咔",
+                    "搜pica",
+                    "搜bika"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "ranking_pica": {
+                "description": "哔咔 排行榜",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "排行哔咔",
+                    "排行pica",
+                    "排行bika"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "random_pica": {
+                "description": "哔咔 随机",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "随机哔咔",
+                    "随机pica",
+                    "随机bika"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "get_pica": {
+                "description": "哔咔 下载并发送文件",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "看哔咔",
+                    "看pica",
+                    "看bika"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "detail_pica": {
+                "description": "哔咔 查看作品信息",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "详情哔咔",
+                    "详情pica",
+                    "详情bika"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "search_hanime1": {
+                "description": "Hanime1 搜索",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "搜anime",
+                    "搜hanime",
+                    "搜h1"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "ranking_hanime1": {
+                "description": "Hanime1 排行榜",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "排行anime",
+                    "排行hanime",
+                    "排行h1"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "random_hanime1": {
+                "description": "Hanime1 随机",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "随机anime",
+                    "随机hanime",
+                    "随机h1"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "get_hanime1": {
+                "description": "Hanime1 下载并发送文件",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "看anime",
+                    "看hanime",
+                    "看h1"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
+            },
+            "detail_hanime1": {
+                "description": "Hanime1 查看作品信息",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "每项一个触发词，第一项为首选；关闭此操作请在 AstrBot 指令管理中禁用。",
+                "default": [
+                    "详情anime",
+                    "详情hanime",
+                    "详情h1"
+                ],
+                "condition": {
+                    "show_settings": true
+                }
             }
         }
     },
@@ -376,7 +966,7 @@
             "list_size": {
                 "description": "单站列表最多显示条数",
                 "type": "int",
-                "hint": "站点专属指令（如“搜eh”）的列表条数，有效范围 1-50。超出部分不显示，也不能用序号获取。",
+                "hint": "单站搜索与排行的列表条数，有效范围 1-50。超出部分不显示，也不能用序号获取。",
                 "default": 20
             },
             "aggregate_list_size": {
@@ -405,7 +995,7 @@
             "auto_fetch": {
                 "description": "随机后直接发送文件",
                 "type": "bool",
-                "hint": "关闭时只发送作品信息，用户可再发“看本 序号”或“看jm 123456”获取。",
+                "hint": "关闭时只发送作品信息；随机结果不生成列表序号，需要文件时请复制卡片中的获取指令。",
                 "default": false
             },
             "mode": {
@@ -415,7 +1005,7 @@
                     "混合随机",
                     "每站随机"
                 ],
-                "hint": "“随机本子”“随机里番”不带站点时：混合随机为每次从候选源站中随机挑一个站，共 N 部；每站随机为每个候选源站各随机 N 部，按源站分组发送。带站点的“随机eh”等只从该站随机。",
+                "hint": "聚合随机（默认“随机本子”“随机里番”）：混合随机为每次从候选源站中随机挑一个站，共 N 部；每站随机为每个候选源站各随机 N 部，按源站分组发送。单站随机只从指定站点随机。",
                 "default": "混合随机"
             },
             "pool": {
@@ -455,7 +1045,7 @@
     "push": {
         "description": "自动推送",
         "type": "object",
-        "hint": "按计划向群聊或私聊推送排行榜、条件作品或随机作品。发送“本子推送”查看任务，“本子推送 执行 1”手动测试。",
+        "hint": "按计划向群聊或私聊推送排行榜、条件作品或随机作品。使用推送管理指令查看任务，添加参数“执行 1”手动测试（默认指令为“本子推送”）。",
         "items": {
             "enable": {
                 "description": "启用自动推送",
@@ -545,7 +1135,7 @@
                             "interval_minutes": {
                                 "description": "推送间隔（分钟）",
                                 "type": "int",
-                                "hint": "大于 0 时忽略推送时间，从每天 00:00 起按间隔推送。",
+                                "hint": "0 使用推送时间；1–1440 分钟忽略推送时间，每天 00:00 重新计算，超过一天的值无效。",
                                 "default": 0
                             },
                             "groups": {
@@ -720,7 +1310,7 @@
                                     "哔咔",
                                     "Hanime1"
                                 ],
-                                "hint": "“全部”从“随机设置 → 全随机候选源站”中挑选。",
+                                "hint": "“全部”从“随机设置 → 随机候选源站”中挑选。",
                                 "default": "全部"
                             },
                             "keyword": {
@@ -802,7 +1392,7 @@
             "admin_id": {
                 "description": "管理员 ID",
                 "type": "string",
-                "hint": "可使用“本子推送”“本子清理缓存”，且不受冷却限制；AstrBot 管理员同样有效。",
+                "hint": "可使用推送管理与缓存清理操作，且不受冷却限制；AstrBot 管理员同样有效。",
                 "default": ""
             },
             "whitelist": {
@@ -910,7 +1500,7 @@
             "session_minutes": {
                 "description": "搜索结果有效期（分钟）",
                 "type": "int",
-                "hint": "超过后“看本 序号”“本子翻页”需要重新搜索。",
+                "hint": "超过后按列表序号获取作品、查看详情或翻页都需要重新搜索。",
                 "default": 30
             }
         }

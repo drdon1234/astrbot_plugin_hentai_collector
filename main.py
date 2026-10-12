@@ -2,6 +2,7 @@
 
 import asyncio
 from collections import OrderedDict
+from dataclasses import replace
 from typing import Awaitable, Callable, Optional
 
 from .core.logger import logger
@@ -10,81 +11,36 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 from astrbot.core.star.filter.event_message_type import EventMessageType
 
+from .core.commands import COMMAND_SPECS
 from .core.config_manager import SOURCE_DISPLAY_NAMES, ConfigManager, resolve_plugin_data_dir
 from .core.constants import Config
 from .core.downloader import ImageDownloader, VideoDownloader
 from .core.errors import CollectorError, SourceUnavailable
 from .core.message_adapter import Delivery, PresenterOptions, WorkPresenter
+from .core.message_adapter.command_binding import CommandBindings
 from .core.packager import Packager
 from .core.push import PushManager
-from .core.service import SiteResult, WorkService, default_period, parse_args, split_command
+from .core.service import MAX_RANDOM_COUNT, RandomResult, SiteResult, WorkService, default_period, parse_args, split_command
 from .core.storage import MODE_RANKING, MODE_SEARCH, JobStore, PushHistory, SearchSession, SearchSessionStore
 from .core.types import PERIOD_LABELS, MediaType, WorkInfo, WorkRef
 
 
-# ── 指令表 ──────────────────────────────────────────────
+# ── 指令语义 ────────────────────────────────────────────
 
-CMD_HELP = "本子帮助"
-CMD_PAGE = "翻页"
-CMD_GET = "看本"
-CMD_DETAIL = "本子详情"
-CMD_SESSION = "本子会话"
-CMD_PUSH = "本子推送"
-CMD_CLEAN = "本子清理缓存"
-
-ACTION_SEARCH = "搜"
-ACTION_RANKING = "排行"
-ACTION_RANDOM = "随机"
-ACTION_GET = "看"
-ACTION_DETAIL = "详情"
-# 动作 → (处理函数名片段, 说明, 参数写法)
-ACTION_INFO = {
-    ACTION_SEARCH: ("search", "搜索", "关键词 [条件]"),
-    ACTION_RANKING: ("ranking", "排行榜", "[日榜|周榜|月榜|年榜|总榜] [页码]"),
-    ACTION_RANDOM: ("random", "随机", "[条件] [N本]"),
-    ACTION_GET: ("get", "下载并发送文件", "ID|链接"),
-    ACTION_DETAIL: ("detail", "作品信息", "ID|链接"),
-}
-SITE_ACTIONS = (ACTION_SEARCH, ACTION_RANKING, ACTION_RANDOM, ACTION_GET, ACTION_DETAIL)
-AGGREGATE_ACTIONS = (ACTION_SEARCH, ACTION_RANKING, ACTION_RANDOM)
-
-# 源站键 → (指令标识, 标识别名)；站点专属指令为“动作 + 标识”，如 搜eh、排行jm、看anime
-SITE_TAGS = {
-    "ehentai": ("eh", ("ex",)),
-    "nhentai": ("nh", ()),
-    "jmcomic": ("jm", ("禁漫",)),
-    "pica": ("哔咔", ("pica", "bika")),
-    "hanime1": ("anime", ("hanime", "h1")),
-}
-# 聚合指令为“动作 + 媒体词”，如 搜本子、排行里番
+ACTION_SEARCH = "search"
+ACTION_RANKING = "ranking"
+ACTION_RANDOM = "random"
+ACTION_GET = "get"
 MEDIA_WORDS = {MediaType.COMIC: "本子", MediaType.VIDEO: "里番"}
 
-COMMAND_ALIASES: dict[str, set[str]] = {
-    CMD_HELP: {"hc", "hc帮助", "里番帮助"},
-    CMD_PAGE: {"本子翻页"},
-    CMD_GET: {"本子下载", "获取本子", "看里番"},
-    CMD_DETAIL: {"详情"},
-    CMD_SESSION: set(),
-    CMD_PUSH: set(),
-    CMD_CLEAN: set(),
-    "搜本子": {"搜本"},
-    "排行本子": {"本子排行", "本子排行榜", "排行榜"},
-    "随机本子": {"随机本"},
-    "搜里番": set(),
-    "排行里番": {"里番排行", "里番排行榜"},
-    "随机里番": set(),
-}
-for _key, (_tag, _extra) in SITE_TAGS.items():
-    for _action in SITE_ACTIONS:
-        COMMAND_ALIASES[f"{_action}{_tag}"] = {f"{_action}{alias}" for alias in _extra}
-del _key, _tag, _extra, _action
-COMMAND_WORDS = frozenset(
-    word for name, aliases in COMMAND_ALIASES.items() for word in (name, *aliases)
-)
-
 MAX_LINKS_PER_MESSAGE = 3
-MAX_RANDOM_COUNT = 5
 MAX_SESSION_INDEX_DIGITS = 3
+
+
+def _command_filter(key: str):
+    """从唯一指令目录注册原生过滤器，运行时绑定用户配置。"""
+    words = COMMAND_SPECS[key].default_words
+    return filter.command(words[0], alias=set(words[1:]))
 
 
 @register(
@@ -99,6 +55,7 @@ class HentaiCollectorPlugin(Star):
         data_dir = resolve_plugin_data_dir()
         self.cfg = ConfigManager(config, data_dir)
         cfg = self.cfg
+        self.commands = CommandBindings(cfg.commands, __name__)
 
         self.sources = cfg.create_source_manager()
         self.job_store = JobStore(cfg.cache.cache_dir)
@@ -126,9 +83,8 @@ class HentaiCollectorPlugin(Star):
                 video_as_file=cfg.hanime1.send_mode == "文件",
                 send_progress=cfg.basic.send_progress,
                 nested_forward=cfg.display.nested_forward,
-                get_command=CMD_GET,
-                page_command=CMD_PAGE,
-                site_get_commands={key: f"{ACTION_GET}{tag}" for key, (tag, _) in SITE_TAGS.items()},
+                command=self.commands.preferred,
+                session_minutes=cfg.limits.session_minutes,
             ),
         )
         self.sessions = SearchSessionStore(cfg.limits.session_minutes * 60)
@@ -148,6 +104,7 @@ class HentaiCollectorPlugin(Star):
 
     async def initialize(self) -> None:
         """插件加载：清理过期缓存、启动周期清理与自动推送。"""
+        await self.commands.initialize()
         if not self.cfg.cache.cache_dir_available:
             logger.warning(f"缓存目录不可用，文件下载功能将无法使用：{self.cfg.cache.cache_dir_error}")
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
@@ -160,6 +117,7 @@ class HentaiCollectorPlugin(Star):
             self._cleanup_task.cancel()
             await asyncio.gather(self._cleanup_task, return_exceptions=True)
         await self.sources.close()
+        self.commands.close()
 
     # ── 内部辅助 ────────────────────────────────────────
 
@@ -179,10 +137,22 @@ class HentaiCollectorPlugin(Star):
                 return False
         except AttributeError:
             return False
-        return self.cfg.permission.check(event.is_private_chat(), event.get_sender_id(), event.get_group_id())
+        if not self.cfg.permission.configuration_valid:
+            return False
+        return self._is_admin(event) or self.cfg.permission.check(
+            event.is_private_chat(), event.get_sender_id(), event.get_group_id(),
+        )
 
     def _is_admin(self, event: AstrMessageEvent) -> bool:
         return self.cfg.permission.is_admin(event.get_sender_id()) or event.is_admin()
+
+    def _command(self, key: str) -> str:
+        """获取当前实际生效的指令名，已停用的操作返回空字符串。"""
+        return self.commands.preferred(key)
+
+    def _command_tokens(self, event: AstrMessageEvent, key: str) -> list[str]:
+        """按实际触发词提取参数，支持指令管理中保存的多词名称。"""
+        return split_command(event.message_str, command_words=self.commands.words(key, include_disabled=True))
 
     def _claim(self, event: AstrMessageEvent) -> bool:
         """同一条消息只处理一次（指令与自动解析可能同时命中）。"""
@@ -217,13 +187,24 @@ class HentaiCollectorPlugin(Star):
         self._cooldowns[key] = loop.time() + seconds
         return 0
 
-    async def _guarded(self, event: AstrMessageEvent, action: Callable[[], Awaitable[None]]) -> None:
+    async def _guarded(
+        self, event: AstrMessageEvent, action: Callable[[], Awaitable[None]], *, listing: bool = False,
+    ) -> None:
         """统一的权限、去重与异常处理。"""
         if not self._allowed(event) or not self._claim(event):
             return
         event.stop_event()
+        async def notice() -> None:
+            await asyncio.sleep(Config.OPERATION_NOTICE_DELAY)
+            await self._delivery(event).safe_text("已收到，正在处理，请稍候；无需重复发送。")
+
+        pending_notice = asyncio.create_task(notice())
         try:
-            await action()
+            if listing:
+                async with self.sessions.hold(self._session_key(event)):
+                    await action()
+            else:
+                await action()
         except asyncio.CancelledError:
             raise
         except CollectorError as exc:
@@ -231,6 +212,9 @@ class HentaiCollectorPlugin(Star):
         except Exception as exc:  # 兜底：任何未预期异常都要告知用户并保留堆栈
             logger.exception("指令处理失败")
             await self._delivery(event).safe_text(self.presenter.describe_error(exc))
+        finally:
+            pending_notice.cancel()
+            await asyncio.gather(pending_notice, return_exceptions=True)
 
     def _source_name(self, key: str) -> str:
         source = self.sources.get(key)
@@ -242,22 +226,42 @@ class HentaiCollectorPlugin(Star):
             raise SourceUnavailable(f"{self._source_name(key)} 未启用，请在插件配置“源站开关”中开启")
         return self.sources.require(key)
 
-    @staticmethod
-    def _no_source(media: MediaType, what: str) -> SourceUnavailable:
-        return SourceUnavailable(f"没有可{what}的{MEDIA_WORDS[media]}源站，请检查插件配置“源站开关”")
+    def _no_source(self, media: MediaType, what: str) -> SourceUnavailable:
+        reasons = [f"{source.name}：{source.unavailable_reason}" for source in self.sources
+                   if source.media_type == media and source.unavailable_reason]
+        detail = "；".join(reasons) if reasons else "请管理员检查“源站开关”及该站是否支持此操作"
+        return SourceUnavailable(f"没有可{what}的{MEDIA_WORDS[media]}源站。{detail}")
 
     async def _load_work(self, target: WorkInfo | WorkRef) -> WorkInfo:
         if isinstance(target, WorkRef):
             return await self.service.get_work(target)
         return await self.service.ensure_detail(target)
 
-    async def _send_and_fetch(self, event: AstrMessageEvent, work: WorkInfo) -> None:
+    async def _fetch_batch(self, event: AstrMessageEvent, works: list[WorkInfo]) -> None:
+        """同一请求只检查一次冷却，单部失败不会打断其余作品。"""
+        if not works:
+            return
         delivery = self._delivery(event)
         left = self._cooldown_left(event)
         if left:
-            await delivery.text(f"获取作品冷却中，请 {left} 秒后再试")
+            hints = "\n".join(self.presenter.retry_hint(work) for work in works)
+            await delivery.text(f"获取作品冷却中，请 {left} 秒后再试。\n{hints}")
             return
-        await self.presenter.send_fetch(delivery, work)
+        failed = []
+        for work in works:
+            try:
+                result = await self.presenter.send_fetch(delivery, work)
+                if len(works) > 1 and result is not None and result.missing:
+                    failed.append(f"《{work.title}》：文件已发送，但有 {result.missing} 页缺失。\n{self.presenter.retry_hint(work)}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # 每部作品是独立投递目标，失败后继续同批其他作品。
+                logger.warning(f"批量获取《{work.title}》失败：{exc!r}")
+                failed.append(f"《{work.title}》：{self.presenter.describe_error(exc)}\n{self.presenter.retry_hint(work)}")
+        if failed:
+            await delivery.safe_text(
+                f"文件完整发送 {len(works) - len(failed)}/{len(works)} 部。\n" + "\n".join(failed)
+            )
 
     # ── 指令分发 ────────────────────────────────────────
 
@@ -290,8 +294,7 @@ class HentaiCollectorPlugin(Star):
         if not self.cfg.basic.auto_parse:
             return
         text = str(event.message_str or "").strip()
-        first = text.lstrip("/／!！#").split(maxsplit=1)[0] if text else ""
-        if not text or first in COMMAND_WORDS:
+        if not text or self.commands.is_command(text):
             return
         refs = self.sources.extract_refs(text)[:MAX_LINKS_PER_MESSAGE]
         if not refs:
@@ -299,69 +302,99 @@ class HentaiCollectorPlugin(Star):
 
         async def action() -> None:
             delivery = self._delivery(event)
+            works = []
             for ref in refs:
                 try:
                     work = await self.service.get_work(ref)
+                    works.append(work)
                     await self.presenter.send_card(delivery, work)
-                    if self.cfg.basic.send_files_on_link:
-                        await self._send_and_fetch(event, work)
-                except CollectorError as exc:
-                    await delivery.safe_text(f"{ref} 解析失败：{exc}")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # 每个链接是独立目标，卡片失败不阻断其余解析和文件获取。
+                    logger.warning(f"自动解析或发送 {ref} 失败：{exc!r}")
+                    await delivery.safe_text(f"{ref} 解析或信息发送失败：{self.presenter.describe_error(exc)}")
+            if self.cfg.basic.send_files_on_link:
+                await self._fetch_batch(event, works)
 
         await self._guarded(event, action)
 
     # ── 帮助与会话 ──────────────────────────────────────
 
-    def _help_text(self) -> str:
-        search, ranking, random_ = ACTION_SEARCH, ACTION_RANKING, ACTION_RANDOM
+    def _help_text(self, admin: bool = False) -> str:
+        """根据有效指令、权限及当前配置生成操作说明。"""
         lines = [
-            "本子 / 里番聚合插件指令：",
-            "【聚合】不写站点，同时查询全部已启用源站，按源站分组发送",
-            f"· {search}本子 {ACTION_INFO[search][2]}",
-            f"· {ranking}本子 {ACTION_INFO[ranking][2]}",
-            f"· {random_}本子 {ACTION_INFO[random_][2]}（{self.cfg.random.mode}）",
-            f"· {search}里番 / {ranking}里番 / {random_}里番  同上，查询里番源站",
-            "【单站】把“本子 / 里番”换成站点标识，并可按 ID 获取：",
-            f"· {search}eh {ACTION_INFO[search][2]}、{ranking}jm 月榜、{random_}nh 3本",
-            f"· {ACTION_GET}jm 350234（下载）、{ACTION_DETAIL}eh 链接（只看信息）",
-            "【通用】",
-            f"· {CMD_GET} 序号|链接  下载并发送文件（里番为视频）",
-            f"· {CMD_DETAIL} 序号|链接  只看作品信息",
-            f"· {CMD_PAGE} 页码|下一页|上一页  翻阅最近一次列表",
-            f"· {CMD_SESSION}  查看当前会话 ID（填写推送目标用）",
-            "",
-            "条件写法：p2 或 第2页、排序=最新|热门|观看|点赞、评分=4、页数=20、分类=xxx、-排除词",
-            "直接发送作品链接或 JM 编号会自动解析。",
-            "",
-            "站点标识与已启用源站：",
+            '本子 / 里番聚合插件',
+            '指令与参数之间留空格；群聊请按 AstrBot 唤醒设置添加前缀或 @机器人。',
+            self._start_hint(),
+            '【聚合查询】',
         ]
-        for key, (tag, extra) in SITE_TAGS.items():
-            source = self.sources.get(key)
-            tags = "/".join((tag, *extra))
-            if source is None:
-                lines.append(f"· {self._source_name(key)}（{tags}）未启用")
+        for media in MEDIA_WORDS:
+            for action in (ACTION_SEARCH, ACTION_RANKING, ACTION_RANDOM):
+                key = f'{action}_{media.value}'
+                command = self._command(key)
+                if command:
+                    spec = COMMAND_SPECS[key]
+                    lines.append(f'· {command} {spec.usage}  {spec.label}')
+        lines.append('【列表与作品】')
+        for key in ('get', 'detail', 'page', 'session', 'help'):
+            words = self.commands.words(key)
+            if not words:
                 continue
-            features = []
-            if source.supports_search:
-                features.append("搜索")
+            spec = COMMAND_SPECS[key]
+            aliases = f'（也可用：{"、".join(words[1:])}）' if len(words) > 1 else ''
+            lines.append(f'· {words[0]} {spec.usage}  {spec.label}{aliases}')
+        lines.extend([
+            f'序号仅对应本人在当前聊天中的最近一次搜索或排行列表，{self.cfg.limits.session_minutes} 分钟后失效。',
+            '随机结果、链接解析和推送卡片：复制卡片中的获取指令；这些卡片不生成列表序号。',
+            '【单站指令与状态】',
+        ])
+        for key, name in SOURCE_DISPLAY_NAMES.items():
+            source = self.sources.get(key)
+            if source is None:
+                lines.append(f'· {name} 未启用')
+                continue
+            if source.unavailable_reason:
+                lines.append(f'· {name} 不可用：{source.unavailable_reason}')
+                continue
+            operations = []
+            for action in ('search', 'ranking', 'random', 'get', 'detail'):
+                if action == 'ranking' and not source.ranking_periods:
+                    continue
+                if action == 'search' and not source.supports_search:
+                    continue
+                if action == 'random' and not source.supports_random:
+                    continue
+                command = self._command(f'{action}_{key}')
+                if command:
+                    operations.append(command)
+            lines.append(f'· {name}：{" / ".join(operations) or "指令已停用"}')
             if source.ranking_periods:
-                features.append("排行(" + "/".join(PERIOD_LABELS[p] for p in source.ranking_periods) + ")")
-            if source.supports_random:
-                features.append("随机")
-            status = f"（不可用：{source.unavailable_reason}）" if source.unavailable_reason else ""
-            lines.append(f"· {source.name}（{tags}）{status} {' '.join(features)}")
-        return "\n".join(lines)
+                lines.append('  榜单：' + '、'.join(PERIOD_LABELS[p] for p in source.ranking_periods))
+        lines.extend([
+            '【条件】p2 / 第2页、排序=最新|热门|观看|点赞、评分=4、页数=20、分类=xxx、-排除词。',
+            '带空格的分类可写 分类="Motion Anime"。各站支持不同，不生效的条件会在结果中说明。',
+            f'自动解析：{"开启" if self.cfg.basic.auto_parse else "关闭"}；JM 编号识别：{"开启" if self.cfg.basic.parse_jm_code else "关闭"}。',
+            f'解析后：{self.cfg.basic.link_action}；随机后：{"自动获取文件" if self.cfg.random.auto_fetch else "仅发送信息"}；聚合随机：{self.cfg.random.mode}。',
+        ])
+        if admin:
+            lines.append('【管理员】')
+            for key in ('push', 'clean'):
+                command = self._command(key)
+                if command:
+                    spec = COMMAND_SPECS[key]
+                    lines.append(f'· {command} {spec.usage}  {spec.label}')
+        return '\n'.join(lines)
 
-    @filter.command(CMD_HELP, alias=COMMAND_ALIASES[CMD_HELP])
+    @_command_filter('help')
     async def cmd_help(self, event: AstrMessageEvent):
         """查看插件帮助。"""
 
         async def action() -> None:
-            await self._delivery(event).text(self._help_text())
+            await self._delivery(event).text(self._help_text(self._is_admin(event)))
 
         await self._guarded(event, action)
 
-    @filter.command(CMD_SESSION)
+    @_command_filter("session")
     async def cmd_session(self, event: AstrMessageEvent):
         """查看当前会话 ID，用于填写推送目标。"""
 
@@ -374,7 +407,37 @@ class HentaiCollectorPlugin(Star):
 
     # ── 列表展示 ────────────────────────────────────────
 
-    async def _show_results(self, event: AstrMessageEvent, session: SearchSession, results: list[SiteResult]) -> None:
+    def _start_hint(self) -> str:
+        """提供可复制的起步操作。"""
+        hints = []
+        for media in MEDIA_WORDS:
+            command = self._command(f"search_{media.value}")
+            if command and self.sources.searchable(media):
+                hints.append(f"先发送「{command} 关键词」搜索，再按列表提示选作品。")
+                break
+        help_command = self._command("help")
+        if help_command:
+            hints.append(f"发送「{help_command}」查看可用指令。")
+        return "\n".join(hints) or "请联系管理员检查源站与指令是否启用。"
+
+    def _require_session(self, event: AstrMessageEvent) -> SearchSession:
+        """在用户尝试连续操作时解释列表缺失或过期。"""
+        try:
+            return self.sessions.require(self._session_key(event))
+        except CollectorError as exc:
+            raise CollectorError(f"{exc}\n{self._start_hint()}") from exc
+
+    def _retained_hint(self, event: AstrMessageEvent) -> str:
+        """说明失败后仍可操作的原列表。"""
+        previous = self.sessions.get(self._session_key(event))
+        if previous is None:
+            return self._start_hint()
+        title = previous.title or "最近的列表"
+        return f"仍保留「{title}」第 {previous.page} 页，序号 1～{len(previous.items)} 仍对应该页。"
+
+    async def _show_results(
+        self, event: AstrMessageEvent, session: SearchSession, results: list[SiteResult], *, turning: bool = False,
+    ) -> None:
         """展示单站或聚合列表并保存会话；聚合时序号在各站之间连续。"""
         delivery = self._delivery(event)
         single = len(session.sources) == 1 and len(results) == 1
@@ -386,86 +449,116 @@ class HentaiCollectorPlugin(Star):
         if not items:
             errors = [result.error if single else f"{self._source_name(result.source)}：{result.error}"
                       for result in results if result.error]
-            await delivery.text("\n".join(errors) if errors else "没有找到符合条件的作品")
+            all_failed = bool(results) and all(result.error for result in results)
+            if turning or all_failed:
+                reason = "\n".join(errors) if errors else f"第 {session.page} 页没有作品。"
+                await delivery.text(f"{reason}\n{self._retained_hint(event)}")
+            else:
+                reason = "没有找到符合条件的作品，已清除旧列表序号。请减少筛选条件或更换关键词。"
+                await delivery.text("\n".join([reason, *errors, self._start_hint()]))
+                self.sessions.discard(self._session_key(event))
             return
         session.items = items
-        session.has_next = any(result.page is not None and result.page.has_next for result in results)
-        self.sessions.save(self._session_key(event), session)
+        # 失败源站的后续页数未知，不能据其他源站的末页阻断继续查询。
+        session.has_next = any(result.error or (result.page is not None and result.page.has_next) for result in results)
         if single:
-            await self.presenter.send_list(delivery, results[0].page)
-        else:
-            await self.presenter.send_aggregate_list(delivery, session.title, session.page, results)
+            session.title = results[0].page.title or session.title
+        try:
+            if single:
+                await self.presenter.send_list(delivery, results[0].page)
+            else:
+                await self.presenter.send_aggregate_list(delivery, session.title, session.page, results)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # 列表投递失败时保留上一份可见结果，并给出恢复提示。
+            logger.warning(f"列表发送失败，未替换会话：{exc!r}")
+            raise CollectorError(f"列表发送失败，请重新发送本次指令。\n{self._retained_hint(event)}") from exc
+        self.sessions.save(self._session_key(event), session)
 
     async def _turn_page(self, event: AstrMessageEvent) -> None:
-        tokens = split_command(event.message_str)
-        session = self.sessions.get(self._session_key(event))
-        if session is None:
-            await self._delivery(event).text("没有最近的列表，请先搜索或查看排行榜")
-            return
+        tokens = self._command_tokens(event, "page")
+        session = self._require_session(event)
         word = tokens[0] if tokens else "下一页"
-        if word.isdigit():
+        command = self._command("page")
+        usage = f"用法：{command} 正整数页码|下一页|上一页，例如「{command} 2」。"
+        if len(tokens) > 1:
+            raise CollectorError(usage)
+        if word.isascii() and word.isdigit() and int(word) > 0:
             target = int(word)
         elif word in ("上一页", "上", "prev"):
             target = session.page - 1
-        else:
+        elif word in ("下一页", "下", "next"):
             target = session.page + 1
+        else:
+            raise CollectorError(usage)
         if target < 1:
             await self._delivery(event).text("已经是第一页")
+            return
+        if target > session.page and not session.has_next:
+            await self._delivery(event).text(f"已经是最后一页（第 {session.page} 页）。可查看本页作品或重新搜索。")
             return
         if session.mode == MODE_RANKING:
             results = await self.service.ranking_many(session.sources, session.period, target)
         else:
             results = await self.service.search_many(session.sources, session.query.with_page(target))
-        session.page = target
-        await self._show_results(event, session, results)
+        await self._show_results(event, replace(session, page=target), results, turning=True)
 
-    @filter.command(CMD_PAGE, alias=COMMAND_ALIASES[CMD_PAGE])
+    @_command_filter("page")
     async def cmd_page(self, event: AstrMessageEvent):
         """翻阅最近一次搜索或排行榜。"""
-        await self._guarded(event, lambda: self._turn_page(event))
+        await self._guarded(event, lambda: self._turn_page(event), listing=True)
 
     # ── 搜索 ────────────────────────────────────────────
 
     async def _site_search(self, event: AstrMessageEvent, key: str) -> None:
-        args = parse_args(split_command(event.message_str))
+        args = parse_args(self._command_tokens(event, f"search_{key}"))
+        if args.count:
+            raise CollectorError("数量仅用于随机操作；搜索请去掉数量条件，使用翻页查看更多结果。")
         source = self.sources.require(key)
         if source.search_hint and args.query.is_empty():
-            await self._delivery(event).safe_text(f"未填写关键词，显示最新作品。{source.search_hint}")
+            await self._delivery(event).safe_text(f"未填写关键词，按站点默认条件浏览。{source.search_hint}")
         session = SearchSession(sources=[key], mode=MODE_SEARCH, query=args.query, page=args.query.page)
         await self._show_results(event, session, await self.service.search_many([key], args.query))
 
     async def _aggregate_search(self, event: AstrMessageEvent, media: MediaType) -> None:
-        tokens = split_command(event.message_str)
+        tokens = self._command_tokens(event, f"search_{media.value}")
         word = MEDIA_WORDS[media]
         if not tokens:
+            command = self._command(f"search_{media.value}")
             await self._delivery(event).text(
-                f"用法：{ACTION_SEARCH}{word} 关键词 [条件]  同时搜索全部{word}源站\n"
-                f"例：{ACTION_SEARCH}{word} 原神 排序=热门\n"
-                f"只搜一个站：{ACTION_SEARCH}eh / {ACTION_SEARCH}jm / {ACTION_SEARCH}anime …\n"
-                f"发送「{CMD_HELP}」查看全部说明"
+                f"用法：{command} 关键词 [条件]  同时搜索可用的{word}源站\n"
+                f"例：{command} 原神\n{self._start_hint()}"
             )
             return
         args = parse_args(tokens)
+        if args.count:
+            raise CollectorError("数量仅用于随机操作；搜索请去掉数量条件，使用翻页查看更多结果。")
         keys = [source.key for source in self.sources.searchable(media)]
         if not keys:
             raise self._no_source(media, "搜索")
         session = SearchSession(
             sources=keys,
             mode=MODE_SEARCH,
-            title=f"{word}聚合搜索：{args.query.describe()}",
+            title=f"{word}聚合搜索，输入条件：{args.query.describe()}（各站生效条件见分组）",
             query=args.query,
             page=args.query.page,
         )
-        await self._show_results(event, session, await self.service.search_many(keys, args.query))
+        results = await self.service.search_many(keys, args.query)
+        await self._report_unavailable(event, media, ACTION_SEARCH)
+        await self._show_results(event, session, results)
 
     # ── 排行 ────────────────────────────────────────────
 
     async def _site_ranking(self, event: AstrMessageEvent, key: str) -> None:
-        args = parse_args(split_command(event.message_str), allow_period=True)
+        args = parse_args(self._command_tokens(event, f"ranking_{key}"), allow_period=True)
         source = self.sources.require(key)
         if not source.ranking_periods:
-            options = "、".join(f"{ACTION_RANKING}{SITE_TAGS[s.key][0]}" for s in self.sources.with_ranking())
-            await self._delivery(event).text(f"{source.name} 没有排行榜，可用：{options}")
+            options = "、".join(
+                command for s in self.sources.with_ranking() if (command := self._command(f"ranking_{s.key}"))
+            )
+            await self._delivery(event).text(
+                f"{source.name} 没有排行榜。" + (f"可用：{options}" if options else self._start_hint())
+            )
             return
         period = args.period or default_period(source)
         self.sources.check_period(source, period)
@@ -474,7 +567,7 @@ class HentaiCollectorPlugin(Star):
         await self._show_results(event, session, await self.service.ranking_many([key], period, page))
 
     async def _aggregate_ranking(self, event: AstrMessageEvent, media: MediaType) -> None:
-        args = parse_args(split_command(event.message_str), allow_period=True)
+        args = parse_args(self._command_tokens(event, f"ranking_{media.value}"), allow_period=True)
         word = MEDIA_WORDS[media]
         sources = self.sources.with_ranking(media)
         if not sources:
@@ -488,7 +581,12 @@ class HentaiCollectorPlugin(Star):
             keys = [source.key for source in sources if period in source.ranking_periods]
             skipped = [source.name for source in sources if period not in source.ranking_periods]
             if not keys:
-                await self._delivery(event).text(f"没有支持{label}的{word}源站")
+                available = sorted({PERIOD_LABELS[p] for source in sources for p in source.ranking_periods})
+                command = self._command(f"ranking_{media.value}")
+                await self._delivery(event).text(
+                    f"没有支持{label}的{word}源站，可选：{'、'.join(available)}。\n"
+                    f"发送「{command}」可查看各站默认榜单。"
+                )
                 return
             note = f"{'、'.join(skipped)} 没有{label}" if skipped else ""
             title = f"{word}聚合排行：{label}" + (f"（{note}）" if note else "")
@@ -496,55 +594,72 @@ class HentaiCollectorPlugin(Star):
                 await self._delivery(event).safe_text(note)
         page = max(1, args.query.page)
         session = SearchSession(sources=keys, mode=MODE_RANKING, title=title, period=period, page=page)
+        await self._report_unavailable(event, media, ACTION_RANKING)
         await self._show_results(event, session, await self.service.ranking_many(keys, period, page))
+
+    async def _report_unavailable(self, event: AstrMessageEvent, media: MediaType, action: str) -> None:
+        """说明聚合操作跳过的已启用源站及其原因。"""
+        notes = self.sources.unavailable(media, action)
+        if notes:
+            await self._delivery(event).safe_text("本次未查询：" + "；".join(notes))
 
     # ── 获取与详情 ──────────────────────────────────────
 
     def _resolve_target(self, event: AstrMessageEvent, tokens: list[str], key: str) -> Optional[WorkInfo | WorkRef]:
         """通用指令解析“序号 / 链接 / JM 编号”，站点指令解析“该站 ID / 链接”。"""
         token = tokens[0]
-        if not key and len(tokens) == 1 and token.isdigit() and len(token) <= MAX_SESSION_INDEX_DIGITS:
-            picked = self.sessions.pick(self._session_key(event), int(token))
-            if picked is not None:
-                return picked
+        if not key and len(tokens) == 1 and token.isdecimal() and len(token) <= MAX_SESSION_INDEX_DIGITS:
+            session = self._require_session(event)
+            index = int(token)
+            if not 1 <= index <= len(session.items):
+                raise CollectorError(f"序号超出范围：当前第 {session.page} 页可选 1～{len(session.items)}。")
+            return session.items[index - 1]
         return self.sources.resolve_reference(tokens, key)
 
     async def _get_or_detail(self, event: AstrMessageEvent, with_files: bool, key: str = "") -> None:
-        tokens = split_command(event.message_str)
-        target = self._resolve_target(event, tokens, key) if tokens else None
+        operation = "get" if with_files else "detail"
+        tokens = self._command_tokens(event, f"{operation}_{key}" if key else operation)
+        # 只等待列表展示与提交，选定作品后立即释放，下载不阻塞后续翻页。
+        async with self.sessions.hold(self._session_key(event)):
+            target = self._resolve_target(event, tokens, key) if tokens else None
         if target is None:
             if key:
-                command = f"{ACTION_GET if with_files else ACTION_DETAIL}{SITE_TAGS[key][0]}"
+                command = self._command(f"{operation}_{key}")
                 usage = f"用法：{command} 作品ID|链接"
+                if key == "ehentai":
+                    usage += "\nE-Hentai 请粘贴完整画廊链接，或填写 gid_token；仅数字 ID 无法定位作品。"
             else:
-                command = CMD_GET if with_files else CMD_DETAIL
+                command = self._command(operation)
                 usage = (
-                    f"用法：{command} 序号|链接\n例：{command} 3、{command} JM350234、"
-                    f"{command} https://nhentai.net/g/123456/\n"
-                    f"按 ID 获取请用站点指令，如「{ACTION_GET if with_files else ACTION_DETAIL}jm 350234」"
+                    f"用法：{command} 序号|链接\n序号来自本人最近一次搜索或排行列表；"
+                    f"也可粘贴完整作品链接。\n{self._start_hint()}"
                 )
             await self._delivery(event).text(usage)
             return
         work = await self._load_work(target)
         if with_files:
-            await self._send_and_fetch(event, work)
+            await self._fetch_batch(event, [work])
         else:
             await self.presenter.send_card(self._delivery(event), work)
 
-    @filter.command(CMD_GET, alias=COMMAND_ALIASES[CMD_GET])
+    @_command_filter("get")
     async def cmd_get(self, event: AstrMessageEvent):
-        """下载并发送作品文件：看本 序号|链接。"""
+        """下载并发送作品文件，参数：序号或作品链接。"""
         await self._guarded(event, lambda: self._get_or_detail(event, True))
 
-    @filter.command(CMD_DETAIL, alias=COMMAND_ALIASES[CMD_DETAIL])
+    @_command_filter("detail")
     async def cmd_detail(self, event: AstrMessageEvent):
-        """查看作品信息：本子详情 序号|链接。"""
+        """查看作品信息，参数：序号或作品链接。"""
         await self._guarded(event, lambda: self._get_or_detail(event, False))
 
     # ── 随机 ────────────────────────────────────────────
 
-    async def _send_random(self, event: AstrMessageEvent, works: list[WorkInfo]) -> None:
+    async def _send_random(self, event: AstrMessageEvent, result: RandomResult) -> None:
+        """展示随机结果，解释数量不足和未生效的筛选条件。"""
         delivery = self._delivery(event)
+        works = result.items
+        if result.notes:
+            await delivery.safe_text("\n".join(result.notes))
         if len(works) == 1:
             await self.presenter.send_card(delivery, works[0])
         else:
@@ -553,21 +668,27 @@ class HentaiCollectorPlugin(Star):
 
     async def _auto_fetch(self, event: AstrMessageEvent, works: list[WorkInfo]) -> None:
         if self.cfg.random.auto_fetch:
-            for work in works:
-                await self._send_and_fetch(event, work)
+            await self._fetch_batch(event, works)
 
     @staticmethod
     def _random_count(count: int) -> int:
-        return max(1, min(MAX_RANDOM_COUNT, count or 1))
+        if count and not 1 <= count <= MAX_RANDOM_COUNT:
+            raise CollectorError(f"每次随机数量应为 1～{MAX_RANDOM_COUNT} 部。")
+        return count or 1
 
     async def _site_random(self, event: AstrMessageEvent, key: str) -> None:
-        args = parse_args(split_command(event.message_str))
+        args = parse_args(self._command_tokens(event, f"random_{key}"))
+        if args.page_given:
+            raise CollectorError("随机操作不使用页码，请去掉页码条件后重试。")
         works = await self.service.random_works(key, args.query, self._random_count(args.count))
         await self._send_random(event, works)
 
     async def _aggregate_random(self, event: AstrMessageEvent, media: MediaType) -> None:
-        args = parse_args(split_command(event.message_str))
+        args = parse_args(self._command_tokens(event, f"random_{media.value}"))
+        if args.page_given:
+            raise CollectorError("随机操作不使用页码，请去掉页码条件后重试。")
         count = self._random_count(args.count)
+        await self._report_unavailable(event, media, ACTION_RANDOM)
         if not self.cfg.random.per_site:
             await self._send_random(event, await self.service.random_works(None, args.query, count, media))
             return
@@ -594,18 +715,23 @@ class HentaiCollectorPlugin(Star):
         if not self._is_admin(event):
             await delivery.text("只有管理员可以管理推送任务")
             return
-        tokens = split_command(event.message_str)
-        if len(tokens) >= 2 and tokens[0] in ("执行", "run") and tokens[1].isdigit():
+        tokens = self._command_tokens(event, "push")
+        command = self._command("push")
+        if len(tokens) == 2 and tokens[0] in ("执行", "run") and tokens[1].isascii() and tokens[1].isdigit():
             index = int(tokens[1])
             if not 1 <= index <= len(self.push_manager.tasks):
-                await delivery.text("任务序号无效")
+                count = len(self.push_manager.tasks)
+                options = f"可选 1～{count}" if count else "当前没有可执行任务，请在“自动推送”中添加有效任务"
+                await delivery.text(f"任务序号无效，{options}。发送「{command}」查看任务。")
                 return
             await delivery.text("正在执行推送任务…")
             await delivery.text(await self.push_manager.run_task(self.push_manager.tasks[index - 1]))
             return
-        await delivery.text(self.push_manager.describe() + f"\n手动执行：{CMD_PUSH} 执行 序号")
+        usage = f"手动执行：{command} 执行 序号" if self.push_manager.tasks else ""
+        invalid = "参数无效，请按下面的写法操作。\n" if tokens else ""
+        await delivery.text(invalid + self.push_manager.describe() + (f"\n{usage}" if usage else ""))
 
-    @filter.command(CMD_PUSH)
+    @_command_filter("push")
     async def cmd_push(self, event: AstrMessageEvent):
         """查看或手动执行推送任务（管理员）。"""
         await self._guarded(event, lambda: self._push(event))
@@ -618,7 +744,7 @@ class HentaiCollectorPlugin(Star):
         cleaned = await asyncio.to_thread(self.job_store.cleanup_expired, True)
         await delivery.text(f"已清理 {cleaned} 个缓存目录")
 
-    @filter.command(CMD_CLEAN)
+    @_command_filter("clean")
     async def cmd_clean(self, event: AstrMessageEvent):
         """清理全部已生成的缓存文件（管理员）。"""
         await self._guarded(event, lambda: self._clean(event))
@@ -628,7 +754,7 @@ class HentaiCollectorPlugin(Star):
 
 
 def _register_command(
-    command: str,
+    key: str,
     handler_name: str,
     doc: str,
     run: Callable[[HentaiCollectorPlugin, AstrMessageEvent], Awaitable[None]],
@@ -640,34 +766,27 @@ def _register_command(
     """
 
     async def handler(self: HentaiCollectorPlugin, event: AstrMessageEvent):
-        await self._guarded(event, lambda: run(self, event))
+        await self._guarded(
+            event, lambda: run(self, event), listing=handler_name.startswith(("cmd_search_", "cmd_ranking_")),
+        )
 
     handler.__name__ = handler_name
     handler.__qualname__ = f"{HentaiCollectorPlugin.__name__}.{handler_name}"
     handler.__doc__ = doc
-    decorated = filter.command(command, alias=COMMAND_ALIASES[command])(handler)
+    decorated = _command_filter(key)(handler)
     setattr(HentaiCollectorPlugin, handler_name, decorated)
 
 
 def _register_generated_commands() -> None:
-    for key, (tag, _) in SITE_TAGS.items():
-        for action in SITE_ACTIONS:
-            name, label, usage = ACTION_INFO[action]
-            _register_command(
-                f"{action}{tag}",
-                f"cmd_{name}_{key}",
-                f"{SOURCE_DISPLAY_NAMES[key]} {label}：{action}{tag} {usage}",
-                lambda self, event, action=action, key=key: self._site_action(event, action, key),
-            )
-    for media, word in MEDIA_WORDS.items():
-        for action in AGGREGATE_ACTIONS:
-            name, label, usage = ACTION_INFO[action]
-            _register_command(
-                f"{action}{word}",
-                f"cmd_{name}_{media.value}_all",
-                f"全部{word}源站聚合{label}：{action}{word} {usage}",
-                lambda self, event, action=action, media=media: self._aggregate_action(event, action, media),
-            )
+    """从固定操作目录生成单站与聚合处理器，名称不随触发词配置变化。"""
+    for spec in COMMAND_SPECS.values():
+        if spec.source:
+            run = lambda self, event, spec=spec: self._site_action(event, spec.action, spec.source)
+        elif spec.media:
+            run = lambda self, event, spec=spec: self._aggregate_action(event, spec.action, MediaType(spec.media))
+        else:
+            continue
+        _register_command(spec.key, spec.handler_name, f"{spec.label}，参数：{spec.usage}", run)
 
 
 _register_generated_commands()

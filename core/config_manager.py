@@ -8,6 +8,7 @@ from typing import Any, Mapping, Optional
 
 from .logger import logger
 
+from .commands import CommandCatalog
 from .constants import Config
 from .net import BACKEND_AIOHTTP, BACKEND_CURL, HttpClient
 from .packager import FORMAT_PDF, OUTPUT_FORMATS, PackageOptions
@@ -334,6 +335,7 @@ class ConfigManager:
         raw = raw if isinstance(raw, Mapping) else {}
         self.data_dir = data_dir
         self.basic = self._parse_basic(_section(raw, "basic"))
+        self.commands = CommandCatalog(raw.get("commands"))
         self.enabled_sources = self._parse_enabled(_section(raw, "sources"))
         self.network = self._parse_network(_section(raw, "network"))
         self.ehentai = self._parse_ehentai(_section(raw, "ehentai"))
@@ -529,7 +531,8 @@ class ConfigManager:
             cookies = {"nw": "1", **(cfg.cookies if cfg.site == "exhentai" else {})}
             # H@H 节点常不发 TLS close_notify，aiohttp 会把大图读成残缺（ContentLengthError），curl 不受影响
             return EHentaiSource(
-                self._http("E-Hentai", cfg.use_proxy, BACKEND_CURL, cookies=cookies),
+                self._http("E-Hentai", cfg.use_proxy, BACKEND_CURL, cookies=cookies,
+                           cookie_domains=("exhentai.org" if cfg.site == "exhentai" else "e-hentai.org",)),
                 site=cfg.site,
                 request_interval=cfg.request_interval,
             )
@@ -561,7 +564,7 @@ class ConfigManager:
             cfg = self.hanime1
             headers = {"Cookie": cfg.cookie} if cfg.cookie else None
             return Hanime1Source(
-                self._http("Hanime1", cfg.use_proxy, BACKEND_CURL, headers=headers),
+                self._http("Hanime1", cfg.use_proxy, BACKEND_CURL, headers=headers, cookie_domains=("hanime1.me",)),
                 default_genre=cfg.default_genre,
                 quality=cfg.quality,
                 send_mode=cfg.send_mode,

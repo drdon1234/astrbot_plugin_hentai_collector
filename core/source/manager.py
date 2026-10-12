@@ -1,10 +1,11 @@
 """源站注册表：别名解析、消息链接路由、作品引用解析、聚合候选与随机源选择。"""
 
 import random
+from dataclasses import replace
 from typing import Iterable, Optional
 
 from ..errors import SourceUnavailable, UnsupportedOperation
-from ..types import PERIOD_LABELS, MediaType, Period, WorkRef
+from ..types import PERIOD_LABELS, SORT_LABELS, MediaType, Period, SearchQuery, SortKey, WorkRef
 from .platform import BaseSource
 
 
@@ -82,6 +83,12 @@ class SourceManager:
         refs = self.extract_refs(text)
         if refs:
             return refs[0]
+        # 显式 JM 编号不受“消息自动解析 JM 编号”开关影响；纯数字仍需要站点或列表序号。
+        jm_source = self._sources.get("jmcomic")
+        if jm_source is not None and text.lower().startswith("jm"):
+            work_id = jm_source.normalize_id(text)
+            if work_id:
+                return WorkRef(jm_source.key, work_id)
         if source_key:
             source = self._sources.get(source_key)
             work_id = source.normalize_id(text) if source is not None else None
@@ -96,6 +103,55 @@ class SourceManager:
         return None
 
     # ── 能力筛选 ──────────────────────────────────────
+
+    @staticmethod
+    def normalize_query(source: BaseSource, query: SearchQuery) -> tuple[SearchQuery, list[str]]:
+        """根据源站能力生成实际查询和忽略说明，不修改用户原始条件。
+
+        Args:
+            source: 目标源站
+            query: 用户输入的查询
+
+        Returns:
+            实际生效查询与面向用户的简短说明
+        """
+        effective = replace(query, exclude=list(query.exclude))
+        notes: list[str] = []
+        if query.sort != SortKey.DEFAULT and query.sort not in source.sort_options:
+            effective.sort = SortKey.DEFAULT
+            notes.append(f"不支持排序「{SORT_LABELS[query.sort]}」，已使用默认排序")
+        if query.min_rating and not source.supports_min_rating:
+            effective.min_rating = 0
+            notes.append(f"不支持最低评分，已忽略评分≥{query.min_rating}")
+        if query.min_pages and not source.supports_min_pages:
+            effective.min_pages = 0
+            notes.append(f"不支持最少页数，已忽略页数≥{query.min_pages}")
+        category = source.normalize_category(query.category)
+        if category is None:
+            category = source.normalize_category("") or ""
+            fallback = f"已使用默认分类「{category}」" if category else "已忽略"
+            notes.append(f"不支持分类「{query.category}」，{fallback}")
+        effective.category = category
+        source.validate_query(effective)
+        return effective, notes
+
+    def unavailable(self, media_type: Optional[MediaType] = None, action: str = "search") -> list[str]:
+        """列出已启用源站不能参加指定操作的原因。"""
+        reasons: list[str] = []
+        for source in self._sources.values():
+            if media_type is not None and source.media_type != media_type:
+                continue
+            reason = source.unavailable_reason
+            if not reason:
+                if action == "search" and not source.supports_search:
+                    reason = "不支持搜索"
+                elif action == "ranking" and not source.ranking_periods:
+                    reason = "没有排行榜"
+                elif action == "random" and not source.supports_random:
+                    reason = "不支持随机"
+            if reason:
+                reasons.append(f"{source.name}：{reason}")
+        return reasons
 
     def _usable(self, media_type: Optional[MediaType]) -> list[BaseSource]:
         return [

@@ -4,6 +4,8 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass, field
+from http.cookiejar import Cookie
+from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -16,7 +18,8 @@ from ..constants import Config
 from ..errors import DownloadError, HttpError
 
 try:  # curl_cffi 用于模拟浏览器 TLS 指纹，绕过 Cloudflare 校验
-    from curl_cffi.requests import AsyncSession as _CurlSession
+    from curl_cffi.curl import CURL_WRITEFUNC_ERROR as _CURL_WRITE_ERROR
+    from curl_cffi.requests import AsyncSession as _CurlSession, Cookies as _CurlCookies
     from curl_cffi.requests.exceptions import RequestException as _CurlError
 except ImportError:  # pragma: no cover - 依赖缺失时回退 aiohttp
     _CurlSession = None
@@ -80,6 +83,7 @@ class HttpClient:
         retries: int = Config.DEFAULT_RETRIES,
         headers: Optional[dict[str, str]] = None,
         cookies: Optional[dict[str, str]] = None,
+        cookie_domains: tuple[str, ...] = (),
         backend: str = BACKEND_AIOHTTP,
         impersonate: str = Config.DEFAULT_IMPERSONATE,
     ):
@@ -89,8 +93,17 @@ class HttpClient:
         self.retries = max(0, int(retries))
         self.impersonate = impersonate or Config.DEFAULT_IMPERSONATE
         self.default_headers = {"User-Agent": Config.DEFAULT_USER_AGENT}
-        self.default_headers.update(headers or {})
         self.cookies = {k: v for k, v in (cookies or {}).items() if k and v}
+        for key, value in (headers or {}).items():
+            if key.lower() == "cookie":
+                parsed = SimpleCookie()
+                parsed.load(value)
+                self.cookies.update({name: morsel.value for name, morsel in parsed.items()})
+            else:
+                self.default_headers[key] = value
+        self.cookie_domains = tuple(dict.fromkeys(domain.lower().strip().rstrip(".") for domain in cookie_domains))
+        if self.cookies and not self.cookie_domains:
+            raise ValueError("配置 Cookie 必须指定认证站点域名")
         self.backend = self._select_backend(backend)
         self._aiohttp_session: Optional[aiohttp.ClientSession] = None
         self._curl_session = None
@@ -112,23 +125,48 @@ class HttpClient:
         if self._aiohttp_session is None or self._aiohttp_session.closed:
             self._aiohttp_session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=self.timeout),
+                cookie_jar=self._cookie_jar(),
             )
         return self._aiohttp_session
 
+    def _cookie_jar(self) -> aiohttp.CookieJar:
+        """建立只向明确认证主机发送的安全 Cookie 容器。"""
+        jar = aiohttp.CookieJar(unsafe=True)
+        for domain in self.cookie_domains:
+            # 不设置 Domain 属性，使其为精确主机 Cookie，避免流向未知子域。
+            cookies = SimpleCookie()
+            for name, value in self.cookies.items():
+                cookies[name] = value
+                cookies[name]["secure"] = True
+                cookies[name]["path"] = "/"
+            jar.update_cookies(cookies, response_url=URL.build(scheme="https", host=domain))
+        return jar
+
     def _curl(self):
         if self._curl_session is None:
+            cookies = _CurlCookies()
+            for domain in self.cookie_domains:
+                for name, value in self.cookies.items():
+                    # Cookies.set(domain=...) 会允许全部子域；明确建立精确主机 Cookie。
+                    cookies.jar.set_cookie(Cookie(
+                        version=0, name=name, value=value, port=None, port_specified=False,
+                        domain=domain, domain_specified=False, domain_initial_dot=False,
+                        path="/", path_specified=True, secure=True, expires=None,
+                        discard=True, comment=None, comment_url=None, rest={}, rfc2109=False,
+                    ))
             self._curl_session = _CurlSession(
                 impersonate=self.impersonate,
                 timeout=self.timeout,
                 max_clients=16,
+                cookies=cookies,
             )
         return self._curl_session
 
     def _merge_headers(self, headers: Optional[dict[str, str]]) -> dict[str, str]:
         merged = dict(self.default_headers)
         merged.update(headers or {})
-        if self.cookies and "Cookie" not in merged:
-            merged["Cookie"] = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
+        if any(key.lower() == "cookie" for key in merged):
+            raise ValueError("Cookie 必须通过认证域配置，不能使用原始请求头")
         if self.backend == BACKEND_CURL:
             # curl_cffi 按模拟的浏览器补齐 UA，手写 UA 会与 TLS 指纹不一致
             merged.pop("User-Agent", None)
@@ -313,14 +351,11 @@ class HttpClient:
             os.replace(partial, dest)
             return written
         except asyncio.CancelledError:
-            partial.unlink(missing_ok=True)
             raise
         except _NETWORK_ERRORS as exc:
-            partial.unlink(missing_ok=True)
             raise DownloadError(f"下载中断：{exc!r}") from exc
-        except DownloadError:
+        finally:
             partial.unlink(missing_ok=True)
-            raise
 
     @staticmethod
     def _check_size(total: int, max_bytes: int) -> None:
@@ -353,29 +388,43 @@ class HttpClient:
 
     async def _download_curl(self, url, partial, headers, max_bytes, timeout, progress) -> int:
         written = 0
-        resp = await self._curl().request(
-            "GET",
-            url,
-            headers=self._merge_headers(headers),
-            proxy=self.proxy or None,
-            timeout=timeout or Config.VIDEO_DOWNLOAD_TIMEOUT,
-            allow_redirects=True,
-            stream=True,
-        )
-        try:
+        write_error = None
+        # 使用分块回调直接写盘，请求协程拥有传输直到完成；取消会移除本请求句柄。
+        # 不启用库内 stream 队列，避免响应头到达前出现无法收尾的后台传输。
+        with partial.open("wb") as stream:
+            def write_chunk(chunk: bytes) -> int:
+                nonlocal written, write_error
+                try:
+                    self._check_size(written + len(chunk), max_bytes)
+                    written += stream.write(chunk)
+                    if progress:
+                        progress(written, 0)
+                except (DownloadError, OSError, RuntimeError, ValueError, TypeError, asyncio.CancelledError) as exc:
+                    # C 回调不能向调用方传播 Python 异常，先中止传输再由请求协程重抛。
+                    write_error = exc
+                    return _CURL_WRITE_ERROR
+                return len(chunk)
+
+            try:
+                resp = await self._curl().request(
+                    "GET",
+                    url,
+                    headers=self._merge_headers(headers),
+                    proxy=self.proxy or None,
+                    timeout=timeout or Config.VIDEO_DOWNLOAD_TIMEOUT,
+                    allow_redirects=True,
+                    content_callback=write_chunk,
+                )
+            except _NETWORK_ERRORS:
+                if write_error is not None:
+                    raise write_error
+                raise
             if resp.status_code >= 400:
                 raise DownloadError(f"下载失败：HTTP {resp.status_code}")
             total = int(resp.headers.get("Content-Length") or 0)
             self._check_size(total, max_bytes)
-            with partial.open("wb") as stream:
-                async for chunk in resp.aiter_content():
-                    written += len(chunk)
-                    self._check_size(written, max_bytes)
-                    stream.write(chunk)
-                    if progress:
-                        progress(written, total)
-        finally:
-            await resp.aclose()
+            if progress:
+                progress(written, total)
         return written
 
     async def close(self) -> None:

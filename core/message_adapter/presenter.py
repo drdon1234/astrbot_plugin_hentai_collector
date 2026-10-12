@@ -1,13 +1,14 @@
 """展示编排：把业务结果（作品、单站与聚合列表、获取结果）渲染为消息并经 Delivery 发送，指令与推送共用。"""
 
 import asyncio
-from dataclasses import dataclass, field
-from typing import Mapping, Optional
+from dataclasses import dataclass
+from typing import Callable, Optional
 
 from astrbot.api.message_components import Image, Plain
 
 from ..logger import logger
 
+from ..commands import COMMAND_SPECS
 from ..errors import CollectorError
 from ..service import SiteResult, WorkService
 from ..source import SourceManager
@@ -23,15 +24,19 @@ from .formatter import (
 from .sender import Delivery
 
 
+def _default_command(key: str) -> str:
+    """独立展示器使用同一目录的默认词，插件运行时注入实时指令查询。"""
+    return COMMAND_SPECS[key].default_words[0] if key in COMMAND_SPECS else ""
+
+
 @dataclass(frozen=True)
 class PresenterOptions:
     """展示相关配置。
 
     Attributes:
         nested_forward: 聚合结果是否使用嵌套合并转发
-        get_command: 按序号 / 链接获取作品的通用指令
-        page_command: 翻页指令
-        site_get_commands: 源站键 → 该站获取指令（如 ``看jm``），用于卡片中的获取提示
+        command: 按操作标识读取当前可用指令，停用操作返回空字符串
+        session_minutes: 列表序号有效期
     """
 
     show_cover: bool = True
@@ -42,9 +47,8 @@ class PresenterOptions:
     video_as_file: bool = False
     send_progress: bool = False
     nested_forward: bool = True
-    get_command: str = "看本"
-    page_command: str = "翻页"
-    site_get_commands: Mapping[str, str] = field(default_factory=dict)
+    command: Callable[[str], str] = _default_command
+    session_minutes: int = 30
 
 
 class WorkPresenter:
@@ -67,10 +71,18 @@ class WorkPresenter:
 
     def get_hint(self, work: WorkInfo) -> str:
         """可直接复制的获取指令：优先使用该站专属指令。"""
-        command = self.options.site_get_commands.get(work.source)
+        command = self.options.command(f"get_{work.source}")
         if command:
             return f"{command} {work.work_id}"
-        return f"{self.options.get_command} {self._alias(work.source)} {work.work_id}"
+        command = self.options.command("get")
+        if command:
+            return f"{command} {work.url or (self._alias(work.source) + ' ' + work.work_id)}"
+        return ""
+
+    def retry_hint(self, work: WorkInfo) -> str:
+        """提供失败后的恢复操作，避免提示已停用或空的指令。"""
+        command = self.get_hint(work)
+        return f"重新获取：{command}" if command else "获取指令已停用，请联系管理员启用后重试。"
 
     def card_text(self, work: WorkInfo) -> str:
         """作品信息卡片文本。"""
@@ -118,7 +130,8 @@ class WorkPresenter:
     async def send_grouped_cards(self, delivery: Delivery, title: str, results: list[SiteResult]) -> None:
         """按源站分组发送多部作品的信息卡片（每站随机）。"""
         summary = [
-            (self._source_name(r.source), f"失败（{r.error}）" if r.error else f"{len(r.items)} 部")
+            (self._source_name(r.source), f"失败（{r.error}）" if r.error else
+             f"{len(r.items)} 部" + (f"；{'；'.join(r.page.notes)}" if r.page and r.page.notes else ""))
             for r in results
         ]
         works = [work for r in results for work in r.items]
@@ -162,7 +175,8 @@ class WorkPresenter:
     ) -> list[list]:
         """统一构造单站与聚合列表：转发逐条展示，普通消息按块留白。"""
         blocks = format_list_blocks(
-            page, self._shorts(), self.options.get_command, self.options.page_command, start=start, tips=tips
+            page, self._shorts(), self.options.command("get"), self.options.command("page"), start=start, tips=tips,
+            detail_command=self.options.command("detail"), session_minutes=self.options.session_minutes,
         )
         covers = [[Image.fromBytes(grid)]] if grid else []
         if separate_entries:
@@ -176,8 +190,7 @@ class WorkPresenter:
         if delivery.supports_forward:
             await delivery.forward(contents)
             return
-        for content in contents:
-            await delivery.chain(content)
+        await delivery.send_contents(contents)
 
     async def send_aggregate_list(self, delivery: Delivery, title: str, page: int, results: list[SiteResult]) -> None:
         """发送聚合列表：总标题 + 每站一组（封面拼图 + 文本列表），序号在各站之间连续。
@@ -201,8 +214,11 @@ class WorkPresenter:
             else:
                 state = f"{start}-{start + len(r.items) - 1}"
             summary.append((self._source_name(r.source), state))
-        has_next = any(r.page is not None and r.page.has_next for r in results)
-        tips = list_tips(self.options.get_command, self.options.page_command, page, has_next)
+        has_next = any(r.error or (r.page is not None and r.page.has_next) for r in results)
+        tips = list_tips(
+            self.options.command("get"), self.options.command("page"), page, has_next,
+            detail_command=self.options.command("detail"), session_minutes=self.options.session_minutes,
+        )
         header = format_aggregate_header(title, page, summary, tips)
 
         listed = [(r, start) for r, start in zip(results, starts, strict=True) if r.items]
@@ -241,8 +257,10 @@ class WorkPresenter:
             kind = "视频" if work.media_type == MediaType.VIDEO else "本子"
             await delivery.safe_text(f"开始获取{kind}《{work.title}》，请稍候…")
         result = await self.service.fetch(work, progress)
-        if send_progress or result.link or result.missing or result.truncated:
-            await delivery.safe_text(format_fetch_summary(result))
+        if result.link:
+            await delivery.text(format_fetch_summary(result, self.get_hint(work)))
+        elif send_progress or result.missing or result.truncated:
+            await delivery.safe_text(format_fetch_summary(result, self.get_hint(work)))
         if result.video is not None:
             if self.options.video_as_file:
                 await delivery.file(result.video)
@@ -257,4 +275,4 @@ class WorkPresenter:
         """把异常转换为面向用户的说明。"""
         if isinstance(exc, CollectorError):
             return str(exc)
-        return f"处理失败，请查看日志：{exc!r}"[:300]
+        return "处理失败，请稍后重新发送本次指令；仍失败时请联系管理员查看日志。"

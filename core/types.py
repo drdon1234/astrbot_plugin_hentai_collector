@@ -129,6 +129,7 @@ class SearchQuery:
         """没有任何筛选条件时返回 True。"""
         return not (
             self.keyword.strip()
+            or self.sort != SortKey.DEFAULT
             or self.min_rating
             or self.min_pages
             or self.category.strip()
@@ -162,6 +163,16 @@ class WorkPage:
     total_pages: Optional[int] = None
     has_next: bool = False
     title: str = ""
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass
+class RandomResult:
+    """一次随机请求的作品、请求数量以及条件和部分完成说明。"""
+
+    items: list[WorkInfo] = field(default_factory=list)
+    requested: int = 1
+    notes: list[str] = field(default_factory=list)
 
 
 @dataclass

@@ -205,19 +205,25 @@ class EHentaiApi:
                     results[int(meta["gid"])] = meta
         return [results[gid] for gid, _ in pairs if gid in results]
 
-    async def page_links(self, gid: int, token: str, filecount: int) -> list[str]:
-        """按页码顺序返回画廊全部单页地址。"""
+    async def page_links(self, gid: int, token: str, filecount: int, max_pages: int = 0) -> list[str]:
+        """发现前若干页的单页地址，缺失原页码时明确报告解析失败。"""
         url = self.gallery_url(gid, token)
+        target = min(filecount, max_pages) if max_pages > 0 else filecount
         links: dict[int, str] = {}
         page = 0
-        while len(links) < filecount:
+        while len(links) < target:
             html = await self.get_html(url, {"p": str(page)} if page else None)
-            found = {k: v for k, v in parse_page_links(html, gid).items() if k not in links}
+            found = {
+                number: page_url for number, page_url in parse_page_links(html, gid).items()
+                if 1 <= number <= target and number not in links
+            }
             if not found:
-                break
+                raise SourceError(
+                    f"E-Hentai 图片链接不完整：预期前 {target} 页，只找到 {len(links)} 页，请稍后重试"
+                )
             links.update(found)
             page += 1
-        return [links[number] for number in sorted(links)]
+        return [links[number] for number in range(1, target + 1)]
 
     async def image_url(self, page_url: str, reload_key: Optional[str] = None) -> tuple[str, Optional[str]]:
         """解析单页上的图片地址。

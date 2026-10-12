@@ -65,6 +65,13 @@ class Hanime1Source(BaseSource):
         self.quality = int(quality)
         self.send_mode = send_mode
 
+    def normalize_category(self, value: str) -> Optional[str]:
+        """返回生效的站点分类，包括配置中的默认分类。"""
+        name = resolve_genre(value, self.default_genre)
+        if not name:
+            return "全部"
+        return name if name in GENRES else None
+
     def work_url(self, work_id: str) -> str:
         return f"{SITE_BASE}/watch?v={work_id}"
 
@@ -147,7 +154,7 @@ class Hanime1Source(BaseSource):
                 html = await self.http.get_text(f"{SITE_BASE}/download", params={"v": work.work_id})
                 merged = dict(sources)
                 for quality, url in parse_sources(html):
-                    merged.setdefault(quality, url)
+                    merged[quality] = url
                 sources = sorted(merged.items(), reverse=True)
             except HttpError:
                 pass
@@ -161,8 +168,8 @@ class Hanime1Source(BaseSource):
         return min(sources) if sources else None
 
     async def fetch(self, work: WorkInfo, ctx: FetchContext) -> MediaBundle:
-        if not work.detailed:
-            work = await self.get_work(work.work_id)
+        # 详情可能保存在搜索会话中；时效视频地址必须以本次请求为准。
+        work = await self.get_work(work.work_id)
         picked = self._pick_source(await self._sources(work))
         if picked is None:
             raise WorkNotFound("没有找到可用的视频源（可能需要在配置中填写 Cookie）")

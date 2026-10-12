@@ -104,7 +104,10 @@ def format_work_card(
     if work.url:
         lines.append(f"链接：{work.url}")
     action = "获取视频" if work.media_type == MediaType.VIDEO else "获取文件"
-    lines.append(f"{action}：{get_hint}")
+    if get_hint:
+        lines.append(f"{action}：{get_hint}")
+    else:
+        lines.append("下载指令已停用，可通过作品链接查看。")
     return "\n".join(lines)
 
 
@@ -139,6 +142,8 @@ def format_list_blocks(
     *,
     start: int = 1,
     tips: bool = True,
+    detail_command: str = "",
+    session_minutes: int = 30,
 ) -> list[str]:
     """生成列表文本块（标题、各条作品与操作提示）。
 
@@ -149,6 +154,8 @@ def format_list_blocks(
         page_command: 翻页指令名
         start: 第一条的序号（聚合列表中各站序号连续）
         tips: 是否附带操作提示（聚合列表的提示放在总标题中）
+        detail_command: 查看详情的有效指令名，空字符串表示停用
+        session_minutes: 最近一次列表的有效分钟数
 
     Returns:
         文本块列表，合并转发时逐块发送，普通消息以空行连接
@@ -159,18 +166,35 @@ def format_list_blocks(
     else:
         header += f"\n（第 {page.page} 页）"
     blocks = [header]
+    if page.notes:
+        blocks.append("\n".join(page.notes))
     for index, work in enumerate(page.items, start):
         blocks.append(format_list_entry(index, work, shorts.get(work.source, work.source)))
     if tips:
-        blocks.append(list_tips(get_command, page_command, page.page, page.has_next))
+        blocks.append(list_tips(
+            get_command, page_command, page.page, page.has_next,
+            detail_command=detail_command, session_minutes=session_minutes,
+        ))
     return blocks
 
 
-def list_tips(get_command: str, page_command: str, page: int, has_next: bool) -> str:
+def list_tips(
+    get_command: str, page_command: str, page: int, has_next: bool,
+    *, detail_command: str = "", session_minutes: int = 30,
+) -> str:
     """列表底部的操作提示。"""
-    tips = [f"发送「{get_command} 序号」获取作品"]
-    if has_next:
+    tips = []
+    if detail_command:
+        tips.append(f"先看详情：「{detail_command} 1」")
+    if get_command:
+        tips.append(f"下载文件：「{get_command} 1」（把 1 换成作品序号）")
+    if page_command and page > 1:
+        tips.append(f"「{page_command} {page - 1}」返回上一页")
+    if page_command and has_next:
         tips.append(f"「{page_command} {page + 1}」查看下一页")
+    if not has_next:
+        tips.append("已经是最后一页。")
+    tips.append(f"序号仅对应本人在当前聊天中的最近一次列表，{session_minutes} 分钟后失效；新列表会替换旧序号。")
     return "\n".join(tips)
 
 
@@ -194,7 +218,7 @@ def format_aggregate_header(title: str, page: int, summary: list[tuple[str, str]
     return "\n\n".join(blocks)
 
 
-def format_fetch_summary(result: FetchResult) -> str:
+def format_fetch_summary(result: FetchResult, retry_hint: str = "") -> str:
     """生成文件发送前的说明文字。"""
     work = result.work
     if result.link:
@@ -212,4 +236,11 @@ def format_fetch_summary(result: FetchResult) -> str:
         parts.append(f"因页数上限跳过 {result.truncated} 页")
     if result.from_cache:
         parts.append("使用缓存")
-    return "，".join(parts) + "，正在发送…"
+    text = "，".join(parts) + "，正在发送…"
+    if result.missing:
+        text += "\n本次文件不完整，下次获取会重新下载。"
+        if retry_hint:
+            text += f"可重试：{retry_hint}"
+    if result.truncated:
+        text += "\n如需完整作品，请管理员调高“文件输出 → 单本最大页数”后重新获取。"
+    return text

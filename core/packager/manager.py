@@ -49,6 +49,9 @@ def validate_images(image_paths: list[Path]) -> tuple[list[Path], int]:
         try:
             with Image.open(path) as image:
                 image.verify()
+            # verify 不完整解码 JPEG；逐页加载实际使用的首帧，随上下文退出释放像素。
+            with Image.open(path) as image:
+                image.load()
             valid.append(path)
         except (OSError, ValueError, SyntaxError, Image.DecompressionBombError) as exc:
             broken += 1

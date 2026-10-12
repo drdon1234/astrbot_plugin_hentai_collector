@@ -25,12 +25,14 @@ def parse_clock(text: str) -> Optional[time]:
 def next_interval(after: datetime, interval_minutes: int, start: time = time(0, 0)) -> datetime:
     """按间隔推送：每天从 ``start`` 起每隔 ``interval_minutes`` 分钟触发，返回 ``after`` 之后的下一时刻。
 
-    间隔不能整除一天时，最后一段到次日 ``start`` 截止，次日重新计算。
+    间隔只支持 1 至 1440 分钟；不能整除一天时，最后一段到次日 ``start`` 截止，次日重新计算。
     """
+    if not 1 <= interval_minutes <= 1440:
+        raise ValueError("日内推送间隔必须为 1 至 1440 分钟")
     anchor = datetime.combine(after.date(), start)
     if anchor > after:
         anchor -= timedelta(days=1)
-    step = timedelta(minutes=max(1, interval_minutes))
+    step = timedelta(minutes=interval_minutes)
     fire = anchor + step * ((after - anchor) // step + 1)
     return min(fire, anchor + timedelta(days=1))
 

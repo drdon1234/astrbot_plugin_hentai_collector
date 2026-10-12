@@ -43,6 +43,7 @@ class NHentaiSource(BaseSource):
     id_pattern = re.compile(r"\d{1,7}")
     ranking_periods = (Period.DAY, Period.WEEK, Period.MONTH, Period.ALL)
     sort_options = (SortKey.LATEST, SortKey.POPULAR)
+    supports_min_pages = True
     search_hint = "支持 nhentai 搜索语法，如 tag:\"big breasts\"、-yaoi；可用 页数=20 筛选"
 
     def __init__(self, http: HttpClient, language: str = ""):
@@ -187,13 +188,16 @@ class NHentaiSource(BaseSource):
 
     # ── 内容获取 ──────────────────────────────────────
 
-    async def list_images(self, work: WorkInfo) -> list[ImageTask]:
+    async def list_images(self, work: WorkInfo, max_pages: int = 0) -> list[ImageTask]:
         if not work.extra.get("pages"):
             work = await self.get_work(work.work_id)
         servers, _ = await self._servers()
         headers = self.resource_headers()
         tasks = []
-        for index, path in enumerate(work.extra.get("pages") or [], 1):
+        paths = work.extra.get("pages") or []
+        if max_pages > 0:
+            paths = paths[:max_pages]
+        for index, path in enumerate(paths, 1):
             if not path:
                 continue
             rotated = servers[index % len(servers):] + servers[: index % len(servers)]

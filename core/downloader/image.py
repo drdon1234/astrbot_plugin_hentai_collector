@@ -6,8 +6,9 @@ from typing import Awaitable, Callable, Optional
 
 from ..logger import logger
 
+from ..async_utils import cancel_and_wait
 from ..constants import Config
-from ..errors import BlockedError, DownloadError, HttpError
+from ..errors import BlockedError, DownloadError, SourceError
 from ..net import HttpClient
 from ..types import ImageTask
 
@@ -85,12 +86,12 @@ class ImageDownloader:
 
         jobs = [asyncio.create_task(worker(task)) for task in tasks]
         try:
-            await asyncio.gather(*jobs)
-        except BlockedError:
-            for job in jobs:
-                job.cancel()
-            await asyncio.gather(*jobs, return_exceptions=True)
-            raise
+            if jobs:
+                completed, _ = await asyncio.wait(jobs, return_when=asyncio.FIRST_EXCEPTION)
+                for job in completed:
+                    job.result()
+        finally:
+            await cancel_and_wait(jobs)
         paths = [results[index] for index in sorted(results)]
         return paths, total - len(paths)
 
@@ -106,7 +107,7 @@ class ImageDownloader:
                     urls = await task.resolve()
             except BlockedError:
                 raise
-            except (HttpError, DownloadError) as exc:
+            except (SourceError, DownloadError) as exc:
                 last_error = str(exc)
                 urls = []
             for url in urls:
@@ -114,7 +115,9 @@ class ImageDownloader:
                     return await self._save(url, task, dest_dir, http)
                 except asyncio.CancelledError:
                     raise
-                except (HttpError, DownloadError) as exc:
+                except BlockedError:
+                    raise
+                except (SourceError, DownloadError) as exc:
                     last_error = str(exc)
             if attempt < self.retries:
                 await asyncio.sleep(Config.RETRY_BASE_DELAY * (attempt + 1))

@@ -1,18 +1,22 @@
 """作品业务编排：详情、单站与聚合的搜索 / 排行 / 随机、“下载→打包→缓存复用”，不依赖 AstrBot 运行时。"""
 
 import asyncio
+import tempfile
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from ..logger import logger
 
+from ..async_utils import cancel_and_wait, run_sync
 from ..constants import Config
 from ..downloader import ImageDownloader, VideoDownloader, detect_image_suffix
 from ..errors import CollectorError, SourceUnavailable, WorkNotFound
 from ..packager import Packager, safe_filename, validate_images
 from ..source import FetchContext, SourceManager
 from ..storage import JobStore
-from ..types import PERIOD_LABELS, FetchResult, MediaType, Period, SearchQuery, WorkInfo, WorkPage, WorkRef
+from ..types import PERIOD_LABELS, FetchResult, MediaType, Period, RandomResult, SearchQuery, WorkInfo, WorkPage, WorkRef
 
 
 ProgressCallback = Callable[[str], Awaitable[None]]
@@ -93,8 +97,10 @@ class WorkService:
         source = self.sources.require(source_key)
         if not source.supports_search:
             raise SourceUnavailable(f"{source.name} 不支持搜索")
-        page = await source.search(query)
-        page.title = f"{source.name} 搜索：{query.describe()}"
+        effective, notes = self.sources.normalize_query(source, query)
+        page = await source.search(effective)
+        page.title = f"{source.name} 搜索：{effective.describe()}"
+        page.notes.extend(notes)
         return page
 
     async def ranking(self, source_key: str, period: Period, page: int = 1) -> WorkPage:
@@ -111,26 +117,53 @@ class WorkService:
         query: Optional[SearchQuery],
         count: int,
         media_type: Optional[MediaType] = None,
-    ) -> list[WorkInfo]:
-        """随机若干部互不重复的作品；部分失败时返回已取得的作品。
+    ) -> RandomResult:
+        """随机若干部互不重复的作品，并保留条件与数量不足的原因。
 
         Raises:
             CollectorError: 一部都没有取得时抛出最后一次的失败
         """
+        if count < 1:
+            raise CollectorError("随机数量必须至少为 1")
         works: list[WorkInfo] = []
+        notes: list[str] = []
+        failures: list[str] = []
+        last_error: Optional[CollectorError] = None
+        duplicates = 0
         for _ in range(count * 2):
             if len(works) >= count:
                 break
+            source = None
             try:
-                work = await self.random_work(source_key, query, media_type)
+                source = self.sources.require(source_key) if source_key else self.sources.pick_random_source(media_type)
+                effective, ignored = self.sources.normalize_query(source, query or SearchQuery())
+                if effective.page != 1:
+                    ignored.append("随机抽取不使用指定页码，已忽略页码条件")
+                    effective = effective.with_page(1)
+                notes.extend(f"{source.name}：{note}" for note in ignored)
+                if (query and not query.is_empty()) or not effective.is_empty():
+                    notes.append(f"{source.name}实际条件：{effective.describe()}")
+                work = await self.random_work(source.key, effective, media_type)
             except CollectorError as exc:
-                if not works:
-                    raise
+                last_error = exc
+                failures.append(f"{source.name}：{exc}" if source else str(exc))
                 logger.warning(f"随机作品失败：{exc}")
                 continue
             if all(work.ref != existing.ref for existing in works):
                 works.append(work)
-        return works
+            else:
+                duplicates += 1
+        if not works:
+            if last_error is not None:
+                raise last_error
+            raise WorkNotFound("没有取得符合条件的随机作品")
+        if len(works) < count:
+            notes.insert(0, f"仅取得 {len(works)}/{count} 部作品")
+            if duplicates:
+                notes.append(f"已去重 {duplicates} 次重复结果，可再次随机尝试")
+        if failures:
+            notes.append("部分请求失败，已重试：" + "；".join(dict.fromkeys(failures)))
+        return RandomResult(items=works, requested=count, notes=list(dict.fromkeys(notes)))
 
     async def random_work(
         self,
@@ -143,7 +176,8 @@ class WorkService:
             source = self.sources.require(source_key)
         else:
             source = self.sources.pick_random_source(media_type)
-        work = await source.random_work(query if query and not query.is_empty() else None)
+        effective, _ = self.sources.normalize_query(source, query or SearchQuery())
+        work = await source.random_work(effective if not effective.is_empty() else None)
         return await self.ensure_detail(work)
 
     # ── 聚合 ──────────────────────────────────────────
@@ -164,7 +198,15 @@ class WorkService:
                 logger.debug(f"聚合请求 {key} 失败：{exc}")
                 return SiteResult(key, error=str(exc))
 
-        return list(await asyncio.gather(*(one(key) for key in keys)))
+        jobs = [asyncio.create_task(one(key)) for key in keys]
+        try:
+            if jobs:
+                completed, _ = await asyncio.wait(jobs, return_when=asyncio.FIRST_EXCEPTION)
+                for job in completed:
+                    job.result()
+            return [job.result() for job in jobs]
+        finally:
+            await cancel_and_wait(jobs)
 
     async def search_many(self, keys: list[str], query: SearchQuery) -> list[SiteResult]:
         """在多个源站并发搜索。"""
@@ -182,8 +224,8 @@ class WorkService:
         """每个源站各随机 ``count`` 部作品。"""
 
         async def call(key: str) -> WorkPage:
-            works = await self.random_works(key, query, count)
-            return WorkPage(items=works, title=f"{self.sources.require(key).name} 随机")
+            result = await self.random_works(key, query, count)
+            return WorkPage(items=result.items, title=f"{self.sources.require(key).name} 随机", notes=result.notes)
 
         return await self._gather(keys, call)
 
@@ -216,17 +258,21 @@ class WorkService:
         Raises:
             CollectorError: 缓存目录不可用、下载或打包失败
         """
-        if not self.cache_available:
+        progress = progress or _silent
+        source = self.sources.require(work.source)
+        link_only = work.media_type == MediaType.VIDEO and getattr(source, "send_mode", "") == "仅链接"
+        if not link_only and not self.cache_available:
             raise SourceUnavailable(
                 "缓存目录不可用，无法下载文件。请检查“缓存设置”，"
                 f"Docker 部署需填写 AstrBot 与消息平台共同挂载的路径。{self.cache_error}"
             )
-        progress = progress or _silent
-        source = self.sources.require(work.source)
         key = str(work.ref)
         lock = self._acquire_lock(key)
         try:
             async with lock:
+                if link_only:
+                    async with self._semaphore:
+                        return await self._fetch_link(source, work, progress)
                 cached = self._cached_result(work)
                 if cached is not None:
                     return cached
@@ -234,6 +280,20 @@ class WorkService:
                     return await self._fetch_fresh(source, work, progress)
         finally:
             self._release_lock(key)
+
+    async def _fetch_link(self, source, work: WorkInfo, progress: ProgressCallback) -> FetchResult:
+        """只解析视频直链，不读取文件缓存或创建任务目录。"""
+        ctx = FetchContext(
+            work_dir=self.job_store.job_dir(work.source, work.work_id),
+            image_downloader=self.image_downloader,
+            video_downloader=self.video_downloader,
+            max_pages=self.max_pages,
+            progress=progress,
+        )
+        bundle = await source.fetch(work, ctx)
+        if not bundle.link:
+            raise WorkNotFound("没有找到可用的视频链接")
+        return FetchResult(work=bundle.work, link=bundle.link)
 
     def _cached_result(self, work: WorkInfo) -> Optional[FetchResult]:
         signature = self._signature(work)
@@ -245,6 +305,9 @@ class WorkService:
             return FetchResult(work=work, video=files[0], from_cache=True)
         if "truncated" not in manifest:
             # 无法确认截断状态的缓存需重建，避免把不完整文件当作完整结果发送。
+            return None
+        if int(manifest.get("missing") or 0) > 0:
+            # 缺页是可恢复失败，用户再次请求时重新获取；配置导致的截断仍可复用。
             return None
         return FetchResult(
             work=work,
@@ -263,13 +326,19 @@ class WorkService:
 
     async def _fetch_fresh(self, source, work: WorkInfo, progress: ProgressCallback) -> FetchResult:
         job = self.job_store.open_job(work.source, work.work_id)
-        self.job_store.mark_expire(job, IN_PROGRESS_RETENTION)
+        previous = self.job_store.find_outputs(work.source, work.work_id, self._signature(work))
+        retention = IN_PROGRESS_RETENTION
+        if previous:
+            retention = max(retention, int(previous["expires_at"] - time.time()) + 1)
+        self.job_store.retain_job(job, retention)
         if not work.detailed:
             work = await self.ensure_detail(work)
+        # 独立目录隔离本次写入，打包失败不能覆盖用户已经取得的旧文件。
+        attempt = Path(tempfile.mkdtemp(prefix="fetch-", dir=job))
         succeeded = False
         try:
             ctx = FetchContext(
-                work_dir=job,
+                work_dir=attempt,
                 image_downloader=self.image_downloader,
                 video_downloader=self.video_downloader,
                 max_pages=self.max_pages,
@@ -285,7 +354,7 @@ class WorkService:
             if not bundle.images:
                 raise WorkNotFound("没有下载到任何图片")
             await progress(f"已下载 {len(bundle.images)} 页，正在生成文件…")
-            files, broken = await self._package(work, bundle.images, job)
+            files, broken = await self._package(work, bundle.images, attempt)
             missing = bundle.missing + broken
             self.job_store.save_outputs(
                 job,
@@ -304,9 +373,12 @@ class WorkService:
             )
         finally:
             if not succeeded:
-                self.job_store.mark_expire(job, Config.MIN_FILE_RETENTION_SECONDS)
-            self.job_store.remove_dir(job / "images")
-            self.job_store.remove_dir(job / "jm")
+                if not previous:
+                    self.job_store.retain_job(job, Config.MIN_FILE_RETENTION_SECONDS)
+                self.job_store.remove_dir(attempt)
+            else:
+                self.job_store.remove_dir(attempt / "images")
+                self.job_store.remove_dir(attempt / "jm")
 
     async def _package(self, work: WorkInfo, images: list, job) -> tuple[list, int]:
         source = self.sources.get(work.source)
@@ -327,7 +399,7 @@ class WorkService:
             valid, broken = validate_images(images)
             return self.packager.package(valid, job / "output", stem, manifest), broken
 
-        return await asyncio.to_thread(run)
+        return await run_sync(run)
 
     # ── 封面 ──────────────────────────────────────────
 
@@ -335,6 +407,7 @@ class WorkService:
         """并发下载封面（每个源站独立限流，聚合列表中各站并行），失败的位置返回 None。
 
         网络错误、5xx 与返回内容不是图片时重试，明确的 4xx 不重试；
+        整批超过总等待预算时停止剩余请求，保留已完成封面，
         失败汇总记录 warning，展示时跳过缺失封面并保留作品信息。
         """
         semaphores = {work.source: asyncio.Semaphore(Config.COVER_DOWNLOAD_CONCURRENCY) for work in works}
@@ -369,7 +442,19 @@ class WorkService:
                     failures.append(f"{work.source}:{work.work_id}（{exc}）")
                     return None
 
-        covers = list(await asyncio.gather(*(one(work) for work in works)))
+        jobs = [asyncio.create_task(one(work)) for work in works]
+        covers: list[Optional[bytes]] = [None] * len(works)
+        try:
+            if jobs:
+                completed, pending = await asyncio.wait(jobs, timeout=Config.COVER_DOWNLOAD_BUDGET)
+                for index, job in enumerate(jobs):
+                    if job in completed:
+                        covers[index] = job.result()
+                    elif job in pending:
+                        work = works[index]
+                        failures.append(f"{work.source}:{work.work_id}（超过封面总等待预算）")
+        finally:
+            await cancel_and_wait(jobs)
         if failures:
             logger.warning(f"{len(failures)}/{len(works)} 张封面下载失败，已跳过这些封面：{'；'.join(failures[:5])}")
         return covers

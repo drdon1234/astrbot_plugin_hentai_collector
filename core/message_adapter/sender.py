@@ -68,9 +68,43 @@ class Delivery:
         await self._send(components)
 
     async def text(self, text: str) -> None:
-        """发送文本，超长时分片。"""
-        for part in chunk_text(text):
+        """发送文本，优先按段落分片，单段超长时按行拆分。"""
+        parts, current = [], ""
+        for paragraph in text.split("\n\n"):
+            if len(paragraph) > Config.TEXT_CHUNK_LIMIT:
+                if current:
+                    parts.append(current)
+                    current = ""
+                parts.extend(chunk_text(paragraph))
+                continue
+            candidate = f"{current}\n\n{paragraph}" if current else paragraph
+            if len(candidate) > Config.TEXT_CHUNK_LIMIT:
+                parts.append(current)
+                current = paragraph
+            else:
+                current = candidate
+        if current:
+            parts.append(current)
+        for part in parts or [""]:
             await self._send([Plain(part)])
+
+    async def send_contents(self, contents: list[list]) -> None:
+        """逐条投递展示内容，正文分片，封面被拒发时继续发送正文。"""
+        for content in contents:
+            media = [component for component in content if not isinstance(component, Plain)]
+            if media:
+                try:
+                    await self._send(media)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # 封面为可选展示，平台拒发不应丢失正文
+                    if any(not isinstance(component, Image) for component in media):
+                        raise
+                    logger.warning(f"封面发送失败，继续发送正文：{exc!r}")
+            for component in content:
+                if isinstance(component, Plain):
+                    await self.text(component.text)
+            await asyncio.sleep(Config.SEND_INTERVAL)
 
     async def image(self, data: bytes, caption: str = "") -> None:
         """发送图片（可附带文字）。"""
@@ -80,7 +114,7 @@ class Delivery:
         await self._send(components)
 
     async def forward(self, contents: list[list], name: str = Config.BOT_DISPLAY_NAME) -> None:
-        """以合并转发发送多段内容；平台不支持时逐条发送。
+        """以合并转发发送多段内容；平台不支持或拒发时逐条发送。
 
         Args:
             contents: 每个元素是一段消息的组件列表
@@ -90,14 +124,18 @@ class Delivery:
         if not contents:
             return
         if not self.supports_forward:
-            for content in contents:
-                await self._send(content)
-                await asyncio.sleep(Config.SEND_INTERVAL)
+            await self.send_contents(contents)
             return
         for start in range(0, len(contents), Config.FORWARD_MAX_NODES):
             batch = contents[start:start + Config.FORWARD_MAX_NODES]
             nodes = [Node(content=content, name=name, uin=self.self_id) for content in batch]
-            await self._send([Nodes(nodes)])
+            try:
+                await self._send([Nodes(nodes)])
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # 平台拒发转发时降级展示，关键正文失败仍向上抛出
+                logger.warning(f"合并转发发送失败，改为普通消息：{exc!r}")
+                await self.send_contents(batch)
 
     async def forward_sections(
         self,
@@ -129,6 +167,8 @@ class Delivery:
                 nodes.append(Node(content=inner, name=title, uin=self.self_id))
         try:
             await self._send([Nodes(nodes)])
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:  # 协议端拒绝嵌套转发时退回单层，避免整条结果丢失
             logger.warning(f"嵌套合并转发发送失败，改用单层合并转发：{exc!r}")
             await self.forward(flat, name)
@@ -146,5 +186,7 @@ class Delivery:
         """发送提示文本，失败只记日志（用于进度提示等非关键消息）。"""
         try:
             await self.text(text)
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:  # 协议端异常类型不统一，提示消息失败不应中断主流程
             logger.warning(f"发送提示消息失败：{exc}")

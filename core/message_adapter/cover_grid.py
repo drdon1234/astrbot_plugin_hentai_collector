@@ -32,6 +32,7 @@ def _open_cover(data: bytes):
 
     with Image.open(BytesIO(data)) as source:
         source.seek(0)
+        source.load()
         if "A" in source.getbands() or "transparency" in source.info:
             rgba = source.convert("RGBA")
             background = Image.new("RGBA", source.size, (255, 255, 255, 255))
@@ -96,7 +97,8 @@ def build_cover_grid(covers: list[Optional[bytes]], blur_radius: int = 0, start:
     """
     from PIL import Image
 
-    tiles = []
+    tile_width = int(TARGET_HEIGHT * 0.7)
+    prepared = []
     for number, data in enumerate(covers, start):
         if not data:
             continue
@@ -104,18 +106,17 @@ def build_cover_grid(covers: list[Optional[bytes]], blur_radius: int = 0, start:
             image = _open_cover(data)
         except (OSError, ValueError, Image.DecompressionBombError):
             continue
-        if image is not None:
-            tiles.append((number, image))
-    if not tiles:
-        return None
-
-    tile_width = int(TARGET_HEIGHT * 0.7)
-    prepared = []
-    for number, image in tiles:
-        image = image.resize(
-            (max(1, int(image.width * TARGET_HEIGHT / image.height)), TARGET_HEIGHT),
-            Image.Resampling.LANCZOS,
-        )
+        if image is None:
+            continue
+        # 每张完整解码、判空后立即缩小，整批只保留固定尺寸的小图。
+        full_image = image
+        try:
+            image = full_image.resize(
+                (max(1, int(full_image.width * TARGET_HEIGHT / full_image.height)), TARGET_HEIGHT),
+                Image.Resampling.LANCZOS,
+            )
+        finally:
+            full_image.close()
         image = image.crop((0, 0, min(image.width, tile_width), TARGET_HEIGHT))
         if image.width < tile_width:
             canvas = Image.new("RGB", (tile_width, TARGET_HEIGHT), (40, 40, 40))
@@ -123,6 +124,8 @@ def build_cover_grid(covers: list[Optional[bytes]], blur_radius: int = 0, start:
             image = canvas
         image = _blur(image, blur_radius)
         prepared.append(_draw_number(image, number))
+    if not prepared:
+        return None
 
     rows = (len(prepared) + GRID_COLUMNS - 1) // GRID_COLUMNS
     columns = min(GRID_COLUMNS, len(prepared))

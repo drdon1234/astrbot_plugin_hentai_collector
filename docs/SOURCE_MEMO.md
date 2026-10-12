@@ -14,6 +14,7 @@
 - **后端**：使用 curl_cffi。H@H 节点（`*.hath.network`）的大图经 aiohttp 下载时经常在接近结尾处断开（`ContentLengthError` + `SSLEOFError`），直连与走代理都会出现；同一批地址用 curl_cffi 下载全部完整（2026-10 在 NAS 实测）。
 - **速度**：每张图都要先请求一次单页，单页请求受 `request_interval` 串行限速，因此整本耗时约为 `页数 × request_interval`；图片下载本身并行，通常不是瓶颈。实测 435 页（770 MB）约 219 秒，0 失败。
 - Cookie `nw=1` 跳过内容警告页；页面含 “temporarily banned” 或里站返回空页面时抛 `BlockedError`。请求经 `RateLimiter` 限速。
+- 认证 Cookie 仅限所选站点的 HTTPS 精确主机；H@H、其他子域与跨域重定向不接收凭据，fake-ip 不影响此规则。发现图片链接时先应用页数上限，目标页码缺失或不连续会明确抛出解析失败。
 
 ## nhentai（`core/source/platform/nhentai.py`）
 
@@ -29,10 +30,10 @@
 ## JMComic（`core/source/platform/jmcomic.py`）
 
 - 通过 `jmcomic` 库的移动端 API 客户端（`impl: api`），所有同步调用在线程中执行。
-- 详情：`get_album_detail`；搜索：`search_site(query, page, order_by, category)`，每页 80；排行：`day_ranking` / `week_ranking` / `month_ranking`，总榜为 `categories_filter(time='a', order_by='mv')`。
+- 详情：`get_album_detail`；关键词搜索：`search_site(query, page, order_by)`，每页 80；分类查询：`categories_filter(page, time='a', category, order_by)`。移动端 `search_site` 丢弃分类参数，关键词与分类组合明确拒绝；分类列表的排除词在本页标题、作者和标签上过滤。排行：`day_ranking` / `week_ranking` / `month_ranking`，总榜为 `categories_filter(time='a', order_by='mv')`。
 - 排序映射：最新 `mr`、观看 `mv`、点赞 `tf`；分类映射见源码 `CATEGORY_PARAMS`。
 - 随机（无条件）：`categories_filter` 取总页数后随机翻页（最多前 200 页）。
-- 下载：`jmcomic.download_album` 自带多线程下载与切割图片还原，下载完成后按自然序收集图片；“单本最多下载页数”在下载后截取。
+- 下载：`jmcomic.download_album` 自带多线程下载与切割图片还原，下载完成后按自然序收集图片；有页数上限时使用本次下载器的 `do_filter` 扩展点，顺序发现所需章节并限制实际图片任务，不修改库的全局下载器。取消同步调用时等待真实线程和库内线程收尾再释放任务资源。
 - 封面：`JmcomicText.get_album_cover_url`。
 
 ## 哔咔（`core/source/platform/pica/`）
@@ -40,6 +41,7 @@
 - App 接口 `https://picaapi.picacomic.com/`，每个请求带 HMAC-SHA256 签名（路径 + 时间 + nonce + 方法 + api-key，转小写）；请求头需与 App 一致，否则登录会误报 1023。
 - 登录 `POST auth/sign-in` 换 Token（约 7 天），401 时自动重新登录一次；登录失败冷却 10 分钟。Token 与账号密码哈希绑定保存。
 - 详情 `comics/{id}`；搜索 `POST comics/advanced-search?page=N`（`keyword`、`sort`、`categories`），只有分类时走 `comics?page=N&c=分类&s=排序`；排序：最新 `dd`、点赞 `ld`、观看 `vd`。
+- 两个查询分支统一按本页标题和标签应用排除词；图片发现达到页数上限后停止请求后续分页与章节。
 - 排行 `comics/leaderboard?tt=H24|D7|D30&ct=VC`；随机 `comics/random`。
 - 图片：按话 `comics/{id}/order/{第几话}/pages?page=N` 分页获取，地址为 `{fileServer}/static/{path}`。
 - 签名按原样路径计算，请求使用 `raw_url` 禁止重新编码。
@@ -50,6 +52,7 @@
 - 排行映射：日 `本日排行`、周 `本週排行`、月 `本月排行`、总 `觀看次數`。
 - 卡片解析：按 `watch?v=ID` 链接切块，在块内找封面 `<img src>` 与标题（`home-rows-videos-title` / `card-mobile-title`），广告卡片没有 watch 链接自然跳过；最大页码取分页链接中的 `page=`（注意 HTML 中是 `&amp;page=`）。
 - 播放页：标题 `#shareBtn-title`（回退 `og:title`）、作者 `#video-artist-name`、“觀看次數：X萬次 日期”、简介 `.video-caption-text`、标签 `.single-video-tag`、视频源 `<source src size>`。
-- 下载页 `/download?v=ID` 补充更多清晰度（文件名形如 `-1080p.mp4`）。未登录通常只有 480P。
+- 获取内容时重新请求播放页详情，不使用搜索会话保存的旧视频地址；下载页 `/download?v=ID` 补充更多清晰度（文件名形如 `-1080p.mp4`），同清晰度使用本次下载页的新地址。未登录通常只有 480P。
 - 视频直链带 `secure` 时效参数，“仅链接”模式发送的地址会过期。
 - 使用 curl_cffi 后端（站点有 Cloudflare）。
+- 配置 Cookie 仅发送到 `hanime1.me` 的 HTTPS 精确主机；仅链接模式每次重新解析，不复用先前下载的视频，也不依赖缓存目录。

@@ -48,6 +48,8 @@ class EHentaiSource(BaseSource):
     link_patterns = (re.compile(r"https?://(?:e-hentai|exhentai)\.org/g/(\d+)/([0-9a-f]{10})"),)
     ranking_periods = (Period.DAY, Period.MONTH, Period.YEAR, Period.ALL)
     sort_options = (SortKey.LATEST,)
+    supports_min_rating = True
+    supports_min_pages = True
     search_hint = "支持 E-Hentai 标签语法，如 female:\"big breasts\"$；可用 评分=4、页数=20、分类=同人志 筛选"
 
     def __init__(self, http: HttpClient, site: str = "e-hentai", request_interval: float = 0.5):
@@ -58,6 +60,10 @@ class EHentaiSource(BaseSource):
 
     def _id_from_match(self, match: re.Match) -> Optional[str]:
         return f"{match.group(1)}_{match.group(2)}"
+
+    def normalize_category(self, value: str) -> Optional[str]:
+        """把分类别名规范为站点分类，未知分类交由业务层说明。"""
+        return resolve_category(value) if value.strip() else ""
 
     def normalize_id(self, raw: str) -> Optional[str]:
         text = str(raw or "").strip()
@@ -183,9 +189,9 @@ class EHentaiSource(BaseSource):
 
     # ── 内容获取 ──────────────────────────────────────
 
-    async def list_images(self, work: WorkInfo) -> list[ImageTask]:
+    async def list_images(self, work: WorkInfo, max_pages: int = 0) -> list[ImageTask]:
         gid, token = self._split_id(work.work_id)
-        page_urls = await self.api.page_links(gid, token, work.pages or 1)
+        page_urls = await self.api.page_links(gid, token, work.pages or 1, max_pages)
         headers = self.resource_headers()
 
         def resolver(url: str):

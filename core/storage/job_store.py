@@ -20,7 +20,7 @@ class JobStore:
     """以 ``{源站}-{作品ID}`` 为目录管理每部作品的下载与输出文件。
 
     目录写入归属标记，清理只处理带标记的目录；``manifest.json`` 记录输出文件、
-    打包参数指纹与过期时间，用于在保留期内直接复用已生成的文件。
+    打包参数指纹、产物有效期与目录清理期限，避免失败重取给旧产物续期。
     """
 
     def __init__(self, cache_dir: str):
@@ -72,11 +72,14 @@ class JobStore:
         extra: Optional[dict] = None,
     ) -> None:
         """记录输出文件与过期时间。"""
+        now = time.time()
+        expires_at = now + max(Config.MIN_FILE_RETENTION_SECONDS, retention_seconds)
         manifest = {
             "files": [str(file.relative_to(job)) for file in files],
             "signature": signature,
-            "created_at": time.time(),
-            "expires_at": time.time() + max(Config.MIN_FILE_RETENTION_SECONDS, retention_seconds),
+            "created_at": now,
+            "expires_at": expires_at,
+            "cleanup_at": expires_at,
         }
         manifest.update(extra or {})
         try:
@@ -84,14 +87,17 @@ class JobStore:
         except OSError as exc:
             logger.warning(f"写入任务清单失败：{exc}")
 
-    def mark_expire(self, job: Path, retention_seconds: int) -> None:
-        """为没有输出清单的任务目录（失败或仅链接）写入过期时间。"""
-        manifest = self._read_manifest(job) or {"files": [], "signature": ""}
-        manifest["expires_at"] = time.time() + max(Config.MIN_FILE_RETENTION_SECONDS, retention_seconds)
+    def retain_job(self, job: Path, retention_seconds: int) -> None:
+        """设置进行中或失败任务的目录清理期限，不改变已生成产物的有效期。"""
+        manifest = self._read_manifest(job) or {"files": [], "signature": "", "expires_at": 0}
+        manifest["cleanup_at"] = max(
+            time.time() + max(Config.MIN_FILE_RETENTION_SECONDS, retention_seconds),
+            float(manifest.get("expires_at") or 0),
+        )
         try:
             (job / MANIFEST_NAME).write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
         except OSError as exc:
-            logger.warning(f"写入过期标记失败：{exc}")
+            logger.warning(f"写入目录清理期限失败：{exc}")
 
     @staticmethod
     def remove_dir(path: Path) -> None:
@@ -119,8 +125,12 @@ class JobStore:
                 manifest = self._read_manifest(path)
                 if force:
                     expired = True
-                elif manifest and manifest.get("expires_at"):
-                    expired = float(manifest["expires_at"]) <= now
+                elif manifest and (manifest.get("cleanup_at") or manifest.get("expires_at")):
+                    # 有效产物本身也需要保留，目录清理不能早于其有效期。
+                    expired = max(
+                        float(manifest.get("cleanup_at") or 0),
+                        float(manifest.get("expires_at") or 0),
+                    ) <= now
                 else:
                     expired = path.stat().st_mtime < stale_before
                 if expired:

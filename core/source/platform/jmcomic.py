@@ -8,7 +8,8 @@ from typing import Any, Iterable, Optional
 
 from ...logger import logger
 
-from ...errors import SourceError, SourceUnavailable, WorkNotFound
+from ...async_utils import run_sync
+from ...errors import SourceError, SourceUnavailable, UnsupportedOperation, WorkNotFound
 from ...net import HttpClient
 from ...packager import natural_key
 from ...types import MediaBundle, Period, SearchQuery, SortKey, WorkInfo, WorkPage
@@ -75,7 +76,7 @@ class JmComicSource(BaseSource):
     )
     id_pattern = re.compile(r"\d{3,9}")
     ranking_periods = (Period.DAY, Period.WEEK, Period.MONTH, Period.ALL)
-    sort_options = (SortKey.LATEST, SortKey.VIEWS, SortKey.LIKES)
+    sort_options = (SortKey.LATEST, SortKey.POPULAR, SortKey.VIEWS, SortKey.LIKES)
     search_hint = "关键词可以是作品名、作者、标签；可用 排序=最新/观看/点赞、分类=同人/单本/韩漫 筛选"
 
     def __init__(
@@ -103,6 +104,16 @@ class JmComicSource(BaseSource):
         except ImportError:
             return "缺少 jmcomic 依赖"
         return ""
+
+    def normalize_category(self, value: str) -> Optional[str]:
+        """校验分类名，避免未知分类被接口静默当作全部分类。"""
+        name = value.strip().lower()
+        return name if not name or name in CATEGORY_PARAMS else None
+
+    def validate_query(self, query: SearchQuery) -> None:
+        """JM 移动端接口不支持关键词与分类的组合搜索。"""
+        if query.keyword.strip() and query.category.strip():
+            raise UnsupportedOperation("JM 不支持同时使用关键词与分类，请分别搜索关键词或只选择分类")
 
     def extract_ids(self, text: str) -> list[str]:
         patterns = self.link_patterns if self.parse_code else self.link_patterns[:1]
@@ -152,11 +163,11 @@ class JmComicSource(BaseSource):
         """在线程中调用 jmcomic 客户端方法，统一转换异常。"""
         async with self._client_lock:
             if self._client is None:
-                self._client = await asyncio.to_thread(lambda: self._option().new_jm_client())
+                self._client = await run_sync(lambda: self._option().new_jm_client())
         client = self._client
         jmcomic = _load_jmcomic()
         try:
-            return await asyncio.to_thread(getattr(client, method), *args, **kwargs)
+            return await run_sync(getattr(client, method), *args, **kwargs)
         except jmcomic.JmcomicException as exc:
             message = str(exc)
             if "不存在" in message or "404" in message or "not found" in message.lower():
@@ -226,16 +237,28 @@ class JmComicSource(BaseSource):
         )
 
     async def search(self, query: SearchQuery) -> WorkPage:
+        self.validate_query(query)
         keyword = " ".join([query.keyword.strip()] + [f"-{word}" for word in query.exclude]).strip()
         page = max(1, query.page)
-        result = await self._call(
-            "search_site",
-            keyword,
-            page=page,
-            order_by=SORT_PARAMS.get(query.sort, "mr"),
-            category=CATEGORY_PARAMS.get(query.category.strip().lower(), "0"),
-        )
-        return self._page(result, page)
+        if query.category.strip():
+            result = await self._call(
+                "categories_filter", page=page, time="a",
+                category=CATEGORY_PARAMS[query.category.strip().lower()],
+                order_by=SORT_PARAMS.get(query.sort, "mr"),
+            )
+        else:
+            result = await self._call(
+                "search_site", keyword, page=page,
+                order_by=SORT_PARAMS.get(query.sort, "mr"),
+            )
+        listing = self._page(result, page)
+        if query.category and query.exclude:
+            excluded = [word.casefold() for word in query.exclude]
+            listing.items = [work for work in listing.items if not any(
+                word in " ".join([work.title, work.author, *work.tags]).casefold()
+                for word in excluded
+            )]
+        return listing
 
     async def ranking(self, period: Period, page: int = 1) -> WorkPage:
         page = max(1, page)
@@ -268,21 +291,47 @@ class JmComicSource(BaseSource):
     # ── 内容获取 ──────────────────────────────────────
 
     async def fetch(self, work: WorkInfo, ctx: FetchContext) -> MediaBundle:
-        """使用 jmcomic 下载并解码整本图片（jmcomic 自带多线程与图片还原）。"""
+        """使用 jmcomic 下载并解码，在真实下载前限制章节与图片页数。"""
         jmcomic = _load_jmcomic()
         base_dir = ctx.work_dir / "jm"
         option = self._option(base_dir)
+        downloader = None
+        if ctx.max_pages > 0:
+            class PageLimitedDownloader(jmcomic.JmDownloader):
+                """按作品顺序限制下载预算，避免请求上限之外的章节详情与图片。"""
+
+                def __init__(self, option):
+                    super().__init__(option)
+                    self._page_limits = {}
+
+                def do_filter(self, detail):
+                    if isinstance(detail, jmcomic.JmAlbumDetail):
+                        remaining, photos = ctx.max_pages, []
+                        for photo in detail:
+                            self.client.check_photo(photo)
+                            limit = min(remaining, len(photo))
+                            self._page_limits[photo.photo_id] = limit
+                            photos.append(photo)
+                            remaining -= limit
+                            if remaining <= 0:
+                                break
+                        return photos
+                    return list(detail)[:self._page_limits[detail.photo_id]]
+
+            downloader = PageLimitedDownloader
         await ctx.progress("JM 图片下载与解码中，大本子可能需要几分钟")
         try:
-            await asyncio.to_thread(jmcomic.download_album, work.work_id, option)
+            album, _ = await run_sync(
+                jmcomic.download_album, work.work_id, option, downloader=downloader,
+            )
         except jmcomic.JmcomicException as exc:
             raise SourceError(f"JM{work.work_id} 下载失败：{str(exc)[:200]}") from exc
         images = _iter_images(base_dir)
         if not images:
             raise WorkNotFound(f"JM{work.work_id} 下载完成但没有找到图片")
-        truncated = 0
-        if ctx.max_pages > 0 and len(images) > ctx.max_pages:
-            truncated = len(images) - ctx.max_pages
-            logger.info(f"JM{work.work_id} 共 {len(images)} 页，按配置截取前 {ctx.max_pages} 页")
-            images = images[: ctx.max_pages]
-        return MediaBundle(work=work, images=images, truncated=truncated)
+        total = to_int(getattr(album, "page_count", 0), 0) or work.pages or len(images)
+        target = min(total, ctx.max_pages) if ctx.max_pages > 0 else total
+        truncated = max(0, total - target)
+        if truncated:
+            logger.info(f"JM{work.work_id} 共 {total} 页，按配置只下载前 {target} 页")
+        return MediaBundle(work=work, images=images, missing=max(0, target - len(images)), truncated=truncated)

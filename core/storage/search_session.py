@@ -1,11 +1,14 @@
 """用户搜索会话：缓存最近一次列表结果（单站或聚合），支持按全局序号取作品与翻页。"""
 
+import asyncio
 import time
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Optional
 
 from ..constants import Config
+from ..errors import CollectorError
 from ..types import Period, SearchQuery, WorkInfo
 
 
@@ -45,6 +48,26 @@ class SearchSessionStore:
     def __init__(self, ttl_seconds: int):
         self.ttl = max(60, int(ttl_seconds))
         self._sessions: OrderedDict[str, SearchSession] = OrderedDict()
+        self._locks: dict[str, tuple[asyncio.Lock, int]] = {}
+
+    @asynccontextmanager
+    async def hold(self, key: str):
+        """串行处理同一用户的列表操作，最后一个等待者退出后释放锁记录。"""
+        lock, users = self._locks.get(key, (asyncio.Lock(), 0))
+        self._locks[key] = (lock, users + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            _, users = self._locks[key]
+            if users == 1:
+                self._locks.pop(key)
+            else:
+                self._locks[key] = (lock, users - 1)
+
+    def discard(self, key: str) -> None:
+        """清除列表，防止新搜索无结果后继续使用旧序号。"""
+        self._sessions.pop(key, None)
 
     def save(self, key: str, session: SearchSession) -> None:
         """保存会话并淘汰最旧的条目。"""
@@ -64,9 +87,11 @@ class SearchSessionStore:
             return None
         return session
 
-    def pick(self, key: str, index: int) -> Optional[WorkInfo]:
-        """按 1 起始的序号取作品。"""
+    def require(self, key: str) -> SearchSession:
+        """读取必须存在的列表，分别说明没有列表和已经过期。"""
+        if key not in self._sessions:
+            raise CollectorError("当前聊天中没有本人的有效列表，请先搜索或查看排行榜。")
         session = self.get(key)
-        if session is None or not 1 <= index <= len(session.items):
-            return None
-        return session.items[index - 1]
+        if session is None:
+            raise CollectorError("最近的列表已过期，请重新搜索或查看排行榜。")
+        return session

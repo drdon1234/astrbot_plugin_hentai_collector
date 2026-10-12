@@ -63,6 +63,8 @@ class BaseSource(ABC):
     sort_options: ClassVar[tuple[SortKey, ...]] = ()
     supports_search: ClassVar[bool] = True
     supports_random: ClassVar[bool] = True
+    supports_min_rating: ClassVar[bool] = False
+    supports_min_pages: ClassVar[bool] = False
     search_hint: ClassVar[str] = ""
 
     def __init__(self, http: HttpClient):
@@ -124,6 +126,13 @@ class BaseSource(ABC):
 
     # ── 查询能力 ──────────────────────────────────────
 
+    def normalize_category(self, value: str) -> Optional[str]:
+        """返回实际查询的分类；固定分类源站在无法识别时返回 None。"""
+        return value.strip()
+
+    def validate_query(self, query: SearchQuery) -> None:
+        """校验条件组合；无法准确实现的组合由源站明确拒绝。"""
+
     @abstractmethod
     async def get_work(self, work_id: str) -> WorkInfo:
         """获取作品完整信息。
@@ -163,8 +172,8 @@ class BaseSource(ABC):
 
     # ── 内容获取 ──────────────────────────────────────
 
-    async def list_images(self, work: WorkInfo) -> list[ImageTask]:
-        """列出作品全部图片的下载任务（漫画类源站实现）。"""
+    async def list_images(self, work: WorkInfo, max_pages: int = 0) -> list[ImageTask]:
+        """按原页码列出图片任务，页数上限为 0 时获取全部图片。"""
         raise UnsupportedOperation(f"{self.name} 不支持图片下载")
 
     async def fetch(self, work: WorkInfo, ctx: FetchContext) -> MediaBundle:
@@ -173,13 +182,15 @@ class BaseSource(ABC):
         默认实现面向漫画：``list_images`` 后交给共享图片下载器；
         需要特殊下载流程的源站（JM 解码、视频）覆盖本方法。
         """
-        tasks = await self.list_images(work)
+        if not work.detailed:
+            work = await self.get_work(work.work_id)
+        tasks = await self.list_images(work, max_pages=ctx.max_pages)
         if not tasks:
             raise WorkNotFound(f"{self.name} 作品没有可下载的图片")
-        truncated = 0
-        if ctx.max_pages > 0 and len(tasks) > ctx.max_pages:
-            truncated = len(tasks) - ctx.max_pages
-            tasks = tasks[: ctx.max_pages]
+        total_pages = work.pages or len(tasks)
+        target_pages = min(total_pages, ctx.max_pages) if ctx.max_pages > 0 else total_pages
+        truncated = max(0, total_pages - target_pages)
+        undiscovered = max(0, target_pages - len(tasks))
 
         async def report(done: int, total: int) -> None:
             await ctx.progress(f"下载进度 {done}/{total}")
@@ -187,7 +198,7 @@ class BaseSource(ABC):
         images, missing = await ctx.image_downloader.download_all(
             tasks, ctx.work_dir / "images", self.http, report
         )
-        return MediaBundle(work=work, images=images, missing=missing, truncated=truncated)
+        return MediaBundle(work=work, images=images, missing=missing + undiscovered, truncated=truncated)
 
     async def close(self) -> None:
         """释放网络资源。"""
